@@ -1,48 +1,41 @@
 package Server;
 
+import Common.OperationalTransform;
 import Common.Protocol;
 import Common.Utils;
+
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * Çok kullanıcılı doküman yönetim sistemi
- * Dosyaları memory'de tutar, çok kullanıcılı erişimi koordine eder
- * Operational Transform ile çakışmaları çözer
+ * Robust Operational Transform entegreli Document Manager
+ * Çok kullanıcılı eş zamanlı düzenleme, 3+ kullanıcı conflict resolution
  */
 public class DocumentManager {
 
-    // Ana doküman storage
+    // Ana document storage
     private final Map<String, Document> documents = new ConcurrentHashMap<>();
 
-    // Dosya kilitleri (her dosya için ayrı lock)
-    private final Map<String, ReentrantReadWriteLock> fileLocks = new ConcurrentHashMap<>();
-
-    // Dosya kullanıcı mapping (hangi dosyayı kimler açmış)
+    // Dosya kullanıcı mapping
     private final Map<String, Set<String>> fileUsers = new ConcurrentHashMap<>();
 
-    // Auto-save executor
+    // Auto-save için executor (basit versiyon)
     private final ScheduledExecutorService autoSaveExecutor;
-
-    // Dosya sayacı (unique ID için)
-    private final AtomicLong fileCounter = new AtomicLong(1);
 
     /**
      * Constructor
      */
     public DocumentManager() {
-        // Auto-save scheduler başlat
-        this.autoSaveExecutor = Executors.newScheduledThreadPool(2);
-        startAutoSaveScheduler();
-
-        // Documents klasörünü oluştur
+        // Documents klasörü oluştur
         createDocumentsDirectory();
 
-        Utils.log("DocumentManager başlatıldı");
+        // Auto-save her 30 saniyede bir
+        this.autoSaveExecutor = Executors.newSingleThreadScheduledExecutor();
+        this.autoSaveExecutor.scheduleAtFixedRate(this::autoSaveAll, 30, 30, TimeUnit.SECONDS);
+
+        Protocol.log("DocumentManager başlatıldı (Robust OT ile)");
     }
 
     /**
@@ -53,139 +46,103 @@ public class DocumentManager {
             Path documentsPath = Paths.get(Protocol.DOCUMENTS_FOLDER);
             if (!Files.exists(documentsPath)) {
                 Files.createDirectories(documentsPath);
-                Utils.log("Documents klasörü oluşturuldu: " + Protocol.DOCUMENTS_FOLDER);
+                Protocol.log("Documents klasörü oluşturuldu: " + Protocol.DOCUMENTS_FOLDER);
             }
         } catch (IOException e) {
-            Utils.logError("Documents klasörü oluşturulamadı", e);
+            Protocol.logError("Documents klasörü oluşturulamadı", e);
         }
     }
 
-    /**
-     * Otomatik kaydetme scheduler'ını başlat
-     */
-    private void startAutoSaveScheduler() {
-        autoSaveExecutor.scheduleAtFixedRate(() -> {
-            try {
-                autoSaveAllDocuments();
-            } catch (Exception e) {
-                Utils.logError("Auto-save hatası", e);
-            }
-        }, Protocol.AUTO_SAVE_INTERVAL, Protocol.AUTO_SAVE_INTERVAL, TimeUnit.MILLISECONDS);
-    }
+    // === DOCUMENT OPERATIONS ===
 
     /**
      * Yeni doküman oluştur
      */
     public String createDocument(String fileName, String creatorUserId) {
         if (!Protocol.isValidFilename(fileName)) {
-            Utils.log("Geçersiz dosya ismi: " + fileName);
+            Protocol.log("Geçersiz dosya ismi: " + fileName);
             return null;
         }
 
         try {
-            // Unique file ID oluştur
+            // Unique file ID
             String fileId = Protocol.generateFileId();
 
-            // Dosya uzantısı kontrolü ve ekleme
-            if (!Protocol.isSupportedExtension(fileName)) {
-                fileName += Protocol.DEFAULT_EXTENSION;
+            // Dosya uzantısı kontrolü
+            if (!fileName.endsWith(Protocol.FILE_EXTENSION)) {
+                fileName += Protocol.FILE_EXTENSION;
             }
 
-            // Yeni doküman oluştur
+            // Yeni document
             Document document = new Document(fileId, fileName, creatorUserId);
-
-            // Lock oluştur
-            fileLocks.put(fileId, new ReentrantReadWriteLock());
-
-            // Storage'a ekle
             documents.put(fileId, document);
 
-            // Kullanıcıyı dosyaya ekle
+            // Kullanıcıyı ekle
             addUserToFile(fileId, creatorUserId);
 
-            Utils.log("Doküman oluşturuldu: " + fileName + " (" + fileId + ") by " + creatorUserId);
-
+            Protocol.log("Doküman oluşturuldu: " + fileName + " (" + fileId + ") by " + creatorUserId);
             return fileId;
 
         } catch (Exception e) {
-            Utils.logError("Doküman oluşturma hatası: " + fileName, e);
+            Protocol.logError("Doküman oluşturma hatası: " + fileName, e);
             return null;
         }
     }
 
     /**
-     * Mevcut dokümanı aç
+     * Dokümanı aç
      */
     public Document openDocument(String fileId, String userId) {
         if (fileId == null || userId == null) {
             return null;
         }
 
-        ReentrantReadWriteLock lock = fileLocks.get(fileId);
-        if (lock == null) {
-            // Dosya mevcut değil - diskten yüklemeyi dene
-            return loadDocumentFromDisk(fileId, userId);
-        }
+        Document doc = documents.get(fileId);
 
-        lock.readLock().lock();
-        try {
-            Document document = documents.get(fileId);
-            if (document != null) {
-                // Kullanıcıyı dosyaya ekle
-                addUserToFile(fileId, userId);
-
-                Utils.log("Doküman açıldı: " + fileId + " by " + userId);
-                return document.copy(); // Thread-safe copy döndür
+        // Memory'de yoksa diskten yükle
+        if (doc == null) {
+            doc = loadDocumentFromDisk(fileId);
+            if (doc != null) {
+                documents.put(fileId, doc);
             }
-
-            return null;
-
-        } finally {
-            lock.readLock().unlock();
         }
+
+        if (doc != null) {
+            addUserToFile(fileId, userId);
+            Protocol.log("Doküman açıldı: " + fileId + " by " + userId);
+            return doc.copy(); // Thread-safe copy
+        }
+
+        return null;
     }
 
     /**
      * Diskten doküman yükle
      */
-    private Document loadDocumentFromDisk(String fileId, String userId) {
+    private Document loadDocumentFromDisk(String fileId) {
         try {
-            // Dosya yolu oluştur
-            String filePath = Protocol.DOCUMENTS_FOLDER + fileId + Protocol.DEFAULT_EXTENSION;
+            String filePath = Protocol.DOCUMENTS_FOLDER + fileId + Protocol.FILE_EXTENSION;
 
             if (!Utils.fileExists(filePath)) {
-                Utils.log("Dosya bulunamadı: " + filePath);
+                Protocol.log("Dosya bulunamadı: " + filePath);
                 return null;
             }
 
-            // Dosya içeriğini oku
             String content = Utils.readFileContent(filePath);
+            Document doc = new Document(fileId, fileId + Protocol.FILE_EXTENSION, "system");
+            doc.setContent(content);
 
-            // Document oluştur
-            Document document = new Document(fileId, fileId + Protocol.DEFAULT_EXTENSION, userId);
-            document.setContent(content);
-
-            // Lock oluştur
-            fileLocks.put(fileId, new ReentrantReadWriteLock());
-
-            // Memory'e yükle
-            documents.put(fileId, document);
-
-            // Kullanıcıyı ekle
-            addUserToFile(fileId, userId);
-
-            Utils.log("Doküman diskten yüklendi: " + fileId);
-
-            return document.copy();
+            Protocol.log("Doküman diskten yüklendi: " + fileId);
+            return doc;
 
         } catch (Exception e) {
-            Utils.logError("Diskten doküman yükleme hatası: " + fileId, e);
+            Protocol.logError("Diskten yükleme hatası: " + fileId, e);
             return null;
         }
     }
 
     /**
-     * Dokümanı kapat (kullanıcı için)
+     * Dokümanı kapat
      */
     public void closeDocument(String fileId, String userId) {
         if (fileId == null || userId == null) {
@@ -194,277 +151,166 @@ public class DocumentManager {
 
         removeUserFromFile(fileId, userId);
 
-        // Eğer dosyayı kullanan kimse kalmadıysa memory'den kaldır
+        // Son kullanıcı ise kaydet ve memory'den kaldır
         Set<String> users = fileUsers.get(fileId);
         if (users == null || users.isEmpty()) {
-            // Son kullanıcı - dosyayı kaydet ve memory'den kaldır
             saveDocument(fileId);
-
             documents.remove(fileId);
-            fileLocks.remove(fileId);
             fileUsers.remove(fileId);
-
-            Utils.log("Doküman memory'den kaldırıldı: " + fileId);
+            Protocol.log("Doküman memory'den kaldırıldı: " + fileId);
         }
 
-        Utils.log("Doküman kapatıldı: " + fileId + " by " + userId);
+        Protocol.log("Doküman kapatıldı: " + fileId + " by " + userId);
     }
 
+    // === ROBUST OPERATIONAL TRANSFORM INTEGRATION ===
+
     /**
-     * Metne ekleme yap (Operational Transform ile)
+     * Text insert - Robust OT ile çakışma çözümü
      */
-    public boolean insertText(String fileId, int position, String text, String userId) {
-        if (!validateTextOperation(fileId, position, text)) {
+    public synchronized boolean insertText(String fileId, int position, String text, String userId) {
+        Document doc = documents.get(fileId);
+        if (doc == null || text == null || text.isEmpty()) {
             return false;
         }
 
-        ReentrantReadWriteLock lock = fileLocks.get(fileId);
-        if (lock == null) {
+        // Position validation ve auto-fix
+        String currentContent = doc.getContent();
+        if (position < 0) position = 0;
+        if (position > currentContent.length()) position = currentContent.length();
+
+        // Yeni operasyon oluştur
+        OperationalTransform.Operation newOp = OperationalTransform.createInsert(position, text, userId);
+
+        // Son operasyonlara karşı transform et
+        List<OperationalTransform.Operation> recentOps = doc.getRecentOperations(20);
+        List<OperationalTransform.Operation> transformedOps =
+                OperationalTransform.transformOperationList(newOp, recentOps);
+
+        // Transform edilmiş operasyonları uygula
+        boolean success = false;
+        for (OperationalTransform.Operation transformedOp : transformedOps) {
+            if (OperationalTransform.isValidOperation(transformedOp, doc.getContent())) {
+                String newContent = OperationalTransform.applyOperation(doc.getContent(), transformedOp);
+                doc.setContent(newContent);
+                doc.addOperation(transformedOp);
+                success = true;
+
+                Protocol.log(String.format("Insert uygulandı: %s pos:%d->%d text:'%s'",
+                        fileId, position, transformedOp.position, transformedOp.content));
+            }
+        }
+
+        return success;
+    }
+
+    /**
+     * Text delete - Robust OT ile çakışma çözümü
+     */
+    public synchronized boolean deleteText(String fileId, int position, int length, String userId) {
+        Document doc = documents.get(fileId);
+        if (doc == null || length <= 0) {
             return false;
         }
 
-        lock.writeLock().lock();
-        try {
-            Document document = documents.get(fileId);
-            if (document == null) {
-                return false;
+        // Position ve length validation
+        String currentContent = doc.getContent();
+        if (position < 0) position = 0;
+        if (position >= currentContent.length()) return false;
+
+        // Length auto-fix
+        length = Math.min(length, currentContent.length() - position);
+        if (length <= 0) return false;
+
+        // Yeni operasyon oluştur
+        OperationalTransform.Operation newOp = OperationalTransform.createDelete(position, length, userId);
+
+        // Son operasyonlara karşı transform et
+        List<OperationalTransform.Operation> recentOps = doc.getRecentOperations(20);
+        List<OperationalTransform.Operation> transformedOps =
+                OperationalTransform.transformOperationList(newOp, recentOps);
+
+        // Transform edilmiş operasyonları uygula
+        boolean success = false;
+        for (OperationalTransform.Operation transformedOp : transformedOps) {
+            if (OperationalTransform.isValidOperation(transformedOp, doc.getContent()) &&
+                    transformedOp.length > 0) {
+
+                String newContent = OperationalTransform.applyOperation(doc.getContent(), transformedOp);
+                doc.setContent(newContent);
+                doc.addOperation(transformedOp);
+                success = true;
+
+                Protocol.log(String.format("Delete uygulandı: %s pos:%d->%d len:%d->%d",
+                        fileId, position, transformedOp.position, length, transformedOp.length));
             }
-
-            // Gelişmiş Operational Transform uygula
-            TextOperation textOperation = new TextOperation(TextOperation.Type.INSERT, position, text, userId);
-            OperationalTransform.Operation transformedOp = transformOperationAdvanced(document, textOperation);
-
-            // Transform edilmiş operasyonu uygula
-            boolean success = document.applyInsert(transformedOp.position, transformedOp.text);
-
-            if (success) {
-                // Yeni operasyonu geçmişe ekle (transformed versiyonu)
-                TextOperation newHistoryOp = new TextOperation(TextOperation.Type.INSERT,
-                        transformedOp.position, transformedOp.text, userId);
-                document.addOperation(newHistoryOp);
-
-                Utils.log("Advanced Text insert başarılı: " + fileId + " pos:" + transformedOp.position +
-                        " (original: " + position + ") text:'" + transformedOp.text + "' by " + userId);
-            }
-
-            return success;
-
-        } finally {
-            lock.writeLock().unlock();
         }
+
+        return success;
     }
 
     /**
-     * Metinden silme yap (Operational Transform ile)
+     * Batch operasyon uygula - network gecikme kompensasyonu için
      */
-    public boolean deleteText(String fileId, int position, int length, String userId) {
-        if (!validateDeleteOperation(fileId, position, length)) {
-            return false;
+    public synchronized List<OperationalTransform.Operation> applyBatchOperations(
+            String fileId, List<OperationalTransform.Operation> clientOps, String userId) {
+
+        Document doc = documents.get(fileId);
+        if (doc == null || clientOps.isEmpty()) {
+            return new ArrayList<>();
         }
 
-        ReentrantReadWriteLock lock = fileLocks.get(fileId);
-        if (lock == null) {
-            return false;
-        }
+        // Server'daki son operasyonları al
+        List<OperationalTransform.Operation> serverOps = doc.getRecentOperations(50);
 
-        lock.writeLock().lock();
-        try {
-            Document document = documents.get(fileId);
-            if (document == null) {
-                return false;
+        // Batch transform
+        List<OperationalTransform.Operation> transformedOps =
+                OperationalTransform.transformBatch(clientOps, serverOps);
+
+        // Transform edilmiş operasyonları uygula
+        for (OperationalTransform.Operation op : transformedOps) {
+            if (OperationalTransform.isValidOperation(op, doc.getContent())) {
+                String newContent = OperationalTransform.applyOperation(doc.getContent(), op);
+                doc.setContent(newContent);
+                doc.addOperation(op);
             }
-
-            // Silinecek metni al
-            String deletedText = document.getContent().substring(position, position + length);
-
-            // Gelişmiş Operational Transform uygula
-            TextOperation textOperation = new TextOperation(TextOperation.Type.DELETE, position, deletedText, userId);
-            OperationalTransform.Operation transformedOp = transformOperationAdvanced(document, textOperation);
-
-            // Transform edilmiş operasyonu uygula
-            boolean success = document.applyDelete(transformedOp.position, transformedOp.length);
-
-            if (success) {
-                // Yeni operasyonu geçmişe ekle (transformed versiyonu)
-                TextOperation newHistoryOp = new TextOperation(TextOperation.Type.DELETE,
-                        transformedOp.position, transformedOp.length + "", userId); // length'i string'e çevir
-                document.addOperation(newHistoryOp);
-
-                Utils.log("Advanced Text delete başarılı: " + fileId + " pos:" + transformedOp.position +
-                        " (original: " + position + ") len:" + transformedOp.length + " by " + userId);
-            }
-
-            return success;
-
-        } finally {
-            lock.writeLock().unlock();
         }
+
+        Protocol.log(String.format("Batch operasyonlar uygulandı: %s - %d ops by %s",
+                fileId, transformedOps.size(), userId));
+
+        return transformedOps;
     }
 
-    /**
-     * Gelişmiş Operational Transform (OperationalTransform sınıfını kullanır)
-     */
-    private OperationalTransform.Operation transformOperationAdvanced(Document document, TextOperation oldOp) {
-        // TextOperation'ı OperationalTransform.Operation'a çevir
-        OperationalTransform.Operation newOp;
-        if (oldOp.type == TextOperation.Type.INSERT) {
-            newOp = new OperationalTransform.Operation(
-                    OperationalTransform.OperationType.INSERT,
-                    oldOp.position, oldOp.text, oldOp.userId, oldOp.timestamp);
-        } else {
-            newOp = new OperationalTransform.Operation(
-                    OperationalTransform.OperationType.DELETE,
-                    oldOp.position, oldOp.text.length(), oldOp.userId, oldOp.timestamp);
-        }
-
-        // Son 10 operasyona karşı transform et
-        List<TextOperation> history = document.getRecentOperations(10);
-
-        for (TextOperation historyOp : history) {
-            OperationalTransform.Operation serverOp;
-            if (historyOp.type == TextOperation.Type.INSERT) {
-                serverOp = new OperationalTransform.Operation(
-                        OperationalTransform.OperationType.INSERT,
-                        historyOp.position, historyOp.text, historyOp.userId, historyOp.timestamp);
-            } else {
-                serverOp = new OperationalTransform.Operation(
-                        OperationalTransform.OperationType.DELETE,
-                        historyOp.position, historyOp.text.length(), historyOp.userId, historyOp.timestamp);
-            }
-
-            // Transform işlemi
-            newOp = OperationalTransform.transform(newOp, serverOp, false);
-        }
-
-        return newOp;
-    }
+    // === FILE MANAGEMENT ===
 
     /**
-     * Basit Operational Transform (eski versiyon - backward compatibility için)
-     * Artık kullanılmıyor, gelişmiş OT kullanıyoruz
-     */
-    @Deprecated
-    private TextOperation transformOperation(Document document, TextOperation newOp) {
-        List<TextOperation> history = document.getRecentOperations(10); // Son 10 operasyon
-
-        TextOperation transformedOp = newOp;
-
-        // Her bir geçmiş operasyonla transform et
-        for (TextOperation historyOp : history) {
-            transformedOp = transform(transformedOp, historyOp);
-        }
-
-        return transformedOp;
-    }
-
-    /**
-     * İki operasyonu transform eder (basit OT algoritması)
-     */
-    private TextOperation transform(TextOperation op1, TextOperation op2) {
-        // Aynı kullanıcının operasyonları transform edilmez
-        if (op1.userId.equals(op2.userId)) {
-            return op1;
-        }
-
-        // INSERT - INSERT transform
-        if (op1.type == TextOperation.Type.INSERT && op2.type == TextOperation.Type.INSERT) {
-            if (op2.position <= op1.position) {
-                // op2, op1'den önce - op1'in pozisyonunu kaydır
-                return new TextOperation(op1.type, op1.position + op2.text.length(), op1.text, op1.userId);
-            }
-            // op2, op1'den sonra - değişiklik yok
-            return op1;
-        }
-
-        // INSERT - DELETE transform
-        if (op1.type == TextOperation.Type.INSERT && op2.type == TextOperation.Type.DELETE) {
-            if (op2.position <= op1.position) {
-                // op2, op1'den önce silme yaptı - op1'in pozisyonunu kaydır
-                int newPosition = Math.max(op2.position, op1.position - op2.text.length());
-                return new TextOperation(op1.type, newPosition, op1.text, op1.userId);
-            }
-            // op2, op1'den sonra - değişiklik yok
-            return op1;
-        }
-
-        // DELETE - INSERT transform
-        if (op1.type == TextOperation.Type.DELETE && op2.type == TextOperation.Type.INSERT) {
-            if (op2.position <= op1.position) {
-                // op2, op1'den önce ekleme yaptı - op1'in pozisyonunu kaydır
-                return new TextOperation(op1.type, op1.position + op2.text.length(), op1.text, op1.userId);
-            }
-            // op2, op1'den sonra - değişiklik yok
-            return op1;
-        }
-
-        // DELETE - DELETE transform
-        if (op1.type == TextOperation.Type.DELETE && op2.type == TextOperation.Type.DELETE) {
-            if (op2.position < op1.position) {
-                // op2, op1'den önce silme yaptı
-                int overlap = Math.min(op1.position, op2.position + op2.text.length()) - op2.position;
-                if (overlap > 0) {
-                    // Çakışma var - op1'i ayarla
-                    int newPosition = op2.position;
-                    int newLength = Math.max(0, op1.text.length() - overlap);
-                    String newText = newLength > 0 ? op1.text.substring(overlap) : "";
-                    return new TextOperation(op1.type, newPosition, newText, op1.userId);
-                } else {
-                    // Çakışma yok - sadece pozisyonu kaydır
-                    return new TextOperation(op1.type, op1.position - op2.text.length(), op1.text, op1.userId);
-                }
-            }
-            // op2, op1'den sonra - değişiklik yok
-            return op1;
-        }
-
-        return op1; // Default: değişiklik yok
-    }
-
-    /**
-     * Dokümanı diske kaydet
+     * Dokümanı kaydet
      */
     public boolean saveDocument(String fileId) {
-        if (fileId == null) {
+        Document doc = documents.get(fileId);
+        if (doc == null) {
             return false;
         }
 
-        ReentrantReadWriteLock lock = fileLocks.get(fileId);
-        if (lock == null) {
-            return false;
-        }
-
-        lock.readLock().lock();
         try {
-            Document document = documents.get(fileId);
-            if (document == null) {
-                return false;
-            }
+            String filePath = Protocol.DOCUMENTS_FOLDER + fileId + Protocol.FILE_EXTENSION;
+            Utils.writeFileContent(filePath, doc.getContent());
+            doc.markSaved();
 
-            // Dosya yolu oluştur
-            String filePath = Protocol.DOCUMENTS_FOLDER + fileId + Protocol.DEFAULT_EXTENSION;
-
-            // İçeriği diske yaz
-            Utils.writeFileContent(filePath, document.getContent());
-
-            // Son kaydetme zamanını güncelle
-            document.updateLastSaved();
-
-            Utils.log("Doküman kaydedildi: " + fileId + " (" + document.getContent().length() + " karakter)");
-
+            Protocol.log("Doküman kaydedildi: " + fileId + " (" + doc.getContent().length() + " karakter)");
             return true;
 
         } catch (Exception e) {
-            Utils.logError("Doküman kaydetme hatası: " + fileId, e);
+            Protocol.logError("Kaydetme hatası: " + fileId, e);
             return false;
-        } finally {
-            lock.readLock().unlock();
         }
     }
 
     /**
-     * Tüm dokümanları otomatik kaydet
+     * Tüm dirty dokümanları kaydet
      */
-    private void autoSaveAllDocuments() {
+    private void autoSaveAll() {
         int savedCount = 0;
 
         for (String fileId : documents.keySet()) {
@@ -477,68 +323,63 @@ public class DocumentManager {
         }
 
         if (savedCount > 0) {
-            Utils.log("Auto-save tamamlandı: " + savedCount + " dosya kaydedildi");
+            Protocol.log("Auto-save: " + savedCount + " dosya kaydedildi");
         }
     }
 
     /**
-     * Tüm dokümanların listesini al
+     * Tüm dokümanları listele
      */
     public List<DocumentInfo> getAllDocuments() {
-        List<DocumentInfo> documentList = new ArrayList<>();
+        List<DocumentInfo> result = new ArrayList<>();
 
         // Memory'deki dokümanlar
         for (Document doc : documents.values()) {
-            DocumentInfo info = new DocumentInfo(
+            result.add(new DocumentInfo(
                     doc.getFileId(),
                     doc.getFileName(),
                     getFileUserCount(doc.getFileId()),
                     doc.getLastModified(),
                     doc.getContent().length()
-            );
-            documentList.add(info);
+            ));
         }
 
         // Diskdeki dokümanlar (memory'de olmayan)
         try {
-            List<String> diskFiles = Utils.listFiles(Protocol.DOCUMENTS_FOLDER);
+            Files.list(Paths.get(Protocol.DOCUMENTS_FOLDER))
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.toString().endsWith(Protocol.FILE_EXTENSION))
+                    .forEach(path -> {
+                        String fileName = path.getFileName().toString();
+                        String fileId = fileName.replace(Protocol.FILE_EXTENSION, "");
 
-            for (String fileName : diskFiles) {
-                if (Protocol.isSupportedExtension(fileName)) {
-                    String fileId = Utils.removeFileExtension(fileName);
+                        if (!documents.containsKey(fileId)) {
+                            try {
+                                long lastModified = Files.getLastModifiedTime(path).toMillis();
+                                long fileSize = Files.size(path);
 
-                    // Memory'de yoksa ekle
-                    if (!documents.containsKey(fileId)) {
-                        String filePath = Protocol.DOCUMENTS_FOLDER + fileName;
-                        long lastModified = Files.getLastModifiedTime(Paths.get(filePath)).toMillis();
-                        long fileSize = Files.size(Paths.get(filePath));
-
-                        DocumentInfo info = new DocumentInfo(fileId, fileName, 0, lastModified, (int)fileSize);
-                        documentList.add(info);
-                    }
-                }
-            }
-
-        } catch (Exception e) {
-            Utils.logError("Disk dosyaları listeleme hatası", e);
+                                result.add(new DocumentInfo(fileId, fileName, 0, lastModified, (int)fileSize));
+                            } catch (IOException e) {
+                                Protocol.logError("Dosya bilgisi okunamadı: " + fileName, e);
+                            }
+                        }
+                    });
+        } catch (IOException e) {
+            Protocol.logError("Dosya listeleme hatası", e);
         }
 
-        // Listeyi son değişiklik tarihine göre sırala
-        documentList.sort((a, b) -> Long.compare(b.lastModified, a.lastModified));
+        // Son değişiklik tarihine göre sırala
+        result.sort((a, b) -> Long.compare(b.lastModified, a.lastModified));
 
-        return documentList;
+        return result;
     }
 
-    /**
-     * Kullanıcıyı dosyaya ekle
-     */
+    // === USER MANAGEMENT ===
+
     private void addUserToFile(String fileId, String userId) {
         fileUsers.computeIfAbsent(fileId, k -> ConcurrentHashMap.newKeySet()).add(userId);
     }
 
-    /**
-     * Kullanıcıyı dosyadan çıkar
-     */
     private void removeUserFromFile(String fileId, String userId) {
         Set<String> users = fileUsers.get(fileId);
         if (users != null) {
@@ -546,68 +387,25 @@ public class DocumentManager {
         }
     }
 
-    /**
-     * Dosyayı kullanan kullanıcıları al
-     */
     public List<String> getFileUsers(String fileId) {
         Set<String> users = fileUsers.get(fileId);
         return users != null ? new ArrayList<>(users) : new ArrayList<>();
     }
 
-    /**
-     * Dosya kullanıcı sayısını al
-     */
     public int getFileUserCount(String fileId) {
         Set<String> users = fileUsers.get(fileId);
         return users != null ? users.size() : 0;
     }
 
-    /**
-     * Açık dosya sayısını al
-     */
-    public int getOpenFileCount() {
-        return documents.size();
-    }
+    // === CLEANUP ===
 
-    /**
-     * Validation metotları
-     */
-    private boolean validateTextOperation(String fileId, int position, String text) {
-        if (fileId == null || text == null) {
-            return false;
-        }
-
-        if (!Protocol.isValidTextPosition(position) || !Protocol.isValidInsertLength(text.length())) {
-            return false;
-        }
-
-        Document doc = documents.get(fileId);
-        return doc != null && position <= doc.getContent().length();
-    }
-
-    private boolean validateDeleteOperation(String fileId, int position, int length) {
-        if (fileId == null) {
-            return false;
-        }
-
-        if (!Protocol.isValidTextPosition(position) || !Protocol.isValidDeleteLength(length)) {
-            return false;
-        }
-
-        Document doc = documents.get(fileId);
-        return doc != null && position + length <= doc.getContent().length();
-    }
-
-    /**
-     * Cleanup - kapatma işlemleri
-     */
     public void shutdown() {
-        Utils.log("DocumentManager kapatılıyor...");
+        Protocol.log("DocumentManager kapatılıyor...");
 
         // Tüm dokümanları kaydet
-        autoSaveAllDocuments();
+        autoSaveAll();
 
-        // Auto-save scheduler'ını durdur
+        // Auto-save executor'ı kapat
         autoSaveExecutor.shutdown();
         try {
             if (!autoSaveExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
@@ -619,23 +417,22 @@ public class DocumentManager {
 
         // Memory'i temizle
         documents.clear();
-        fileLocks.clear();
         fileUsers.clear();
 
-        Utils.log("DocumentManager kapatıldı");
+        Protocol.log("DocumentManager kapatıldı");
     }
 
-    // === İÇ SINIFLAR ===
+    // === INNER CLASSES ===
 
     /**
-     * Doküman bilgi sınıfı
+     * Document info için basit data class
      */
     public static class DocumentInfo {
-        private final String fileId;
-        private final String fileName;
-        private final int userCount;
-        private final long lastModified;
-        private final int size;
+        public final String fileId;
+        public final String fileName;
+        public final int userCount;
+        public final long lastModified;
+        public final int size;
 
         public DocumentInfo(String fileId, String fileName, int userCount, long lastModified, int size) {
             this.fileId = fileId;
@@ -653,7 +450,7 @@ public class DocumentManager {
     }
 
     /**
-     * Doküman sınıfı
+     * Document sınıfı - Operational Transform ile entegreli
      */
     public static class Document {
         private final String fileId;
@@ -663,12 +460,11 @@ public class DocumentManager {
 
         private StringBuilder content;
         private long lastModified;
-        private long lastSaved;
         private boolean dirty = false;
 
-        // Operational Transform için operasyon geçmişi
-        private final List<TextOperation> operationHistory = new ArrayList<>();
-        private final Object historyLock = new Object();
+        // OT için operasyon geçmişi
+        private final List<OperationalTransform.Operation> operationHistory =
+                Collections.synchronizedList(new ArrayList<>());
 
         public Document(String fileId, String fileName, String creatorUserId) {
             this.fileId = fileId;
@@ -676,45 +472,20 @@ public class DocumentManager {
             this.creatorUserId = creatorUserId;
             this.createdTime = System.currentTimeMillis();
             this.lastModified = createdTime;
-            this.lastSaved = 0;
             this.content = new StringBuilder();
         }
 
-        public boolean applyInsert(int position, String text) {
-            if (position < 0 || position > content.length()) {
-                return false;
-            }
+        public void addOperation(OperationalTransform.Operation operation) {
+            operationHistory.add(operation);
 
-            content.insert(position, text);
-            lastModified = System.currentTimeMillis();
-            dirty = true;
-            return true;
-        }
-
-        public boolean applyDelete(int position, int length) {
-            if (position < 0 || position + length > content.length()) {
-                return false;
-            }
-
-            content.delete(position, position + length);
-            lastModified = System.currentTimeMillis();
-            dirty = true;
-            return true;
-        }
-
-        public void addOperation(TextOperation operation) {
-            synchronized (historyLock) {
-                operationHistory.add(operation);
-
-                // Geçmişi sınırla (son 50 operasyon)
-                if (operationHistory.size() > 50) {
-                    operationHistory.remove(0);
-                }
+            // Geçmişi sınırla (son 100 operasyon)
+            if (operationHistory.size() > 100) {
+                operationHistory.remove(0);
             }
         }
 
-        public List<TextOperation> getRecentOperations(int count) {
-            synchronized (historyLock) {
+        public List<OperationalTransform.Operation> getRecentOperations(int count) {
+            synchronized (operationHistory) {
                 int fromIndex = Math.max(0, operationHistory.size() - count);
                 return new ArrayList<>(operationHistory.subList(fromIndex, operationHistory.size()));
             }
@@ -724,49 +495,28 @@ public class DocumentManager {
             Document copy = new Document(fileId, fileName, creatorUserId);
             copy.content = new StringBuilder(content.toString());
             copy.lastModified = lastModified;
-            copy.lastSaved = lastSaved;
             copy.dirty = dirty;
             return copy;
         }
 
-        public void updateLastSaved() {
-            lastSaved = System.currentTimeMillis();
+        public void markSaved() {
             dirty = false;
         }
 
-        // Getters
+        // Getters & Setters
         public String getFileId() { return fileId; }
         public String getFileName() { return fileName; }
         public String getCreatorUserId() { return creatorUserId; }
         public String getContent() { return content.toString(); }
+
         public void setContent(String content) {
-            this.content = new StringBuilder(content);
+            this.content = new StringBuilder(content != null ? content : "");
             this.lastModified = System.currentTimeMillis();
             this.dirty = true;
         }
+
         public long getLastModified() { return lastModified; }
         public long getCreatedTime() { return createdTime; }
         public boolean isDirty() { return dirty; }
-    }
-
-    /**
-     * Text operasyon sınıfı (Operational Transform için)
-     */
-    public static class TextOperation {
-        public enum Type { INSERT, DELETE }
-
-        public final Type type;
-        public final int position;
-        public final String text;
-        public final String userId;
-        public final long timestamp;
-
-        public TextOperation(Type type, int position, String text, String userId) {
-            this.type = type;
-            this.position = position;
-            this.text = text;
-            this.userId = userId;
-            this.timestamp = System.currentTimeMillis();
-        }
     }
 }

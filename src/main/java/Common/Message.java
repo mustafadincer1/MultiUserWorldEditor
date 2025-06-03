@@ -1,155 +1,71 @@
 package Common;
 
-import  Exception.MessageParseException;
-
-// JSON işlemleri için basit manual parsing kullanacağız
+import java.util.HashMap;
+import java.util.Map;
 
 /**
- * MTP (Multi-user Text Protocol) için mesaj sınıfı
- * Format: [TYPE]|[LENGTH]|[USER_ID]|[FILE_ID]|[DATA]|[TIMESTAMP]\n
+ * MTP (Multi-user Text Protocol) Mesaj Sınıfı - Sadeleştirilmiş Versiyon
+ * Format: TYPE|USER_ID|FILE_ID|DATA_FIELD1:VALUE1,FIELD2:VALUE2|TIMESTAMP\n
  */
 public class Message {
 
-    // Enum tanımları
+    // Mesaj tipleri - sadece gerekli olanlar
     public enum MessageType {
-        // Bağlantı mesajları
+        // Bağlantı
         CONNECT, CONNECT_ACK, DISCONNECT,
-
         // Dosya işlemleri
         FILE_LIST, FILE_LIST_RESP, FILE_CREATE, FILE_OPEN, FILE_CONTENT,
-
         // Metin düzenleme
         TEXT_INSERT, TEXT_DELETE, TEXT_UPDATE,
-
-        // İmleç işlemleri
-        CURSOR_MOVE, CURSOR_UPDATE,
-
-        // Kaydetme
-        SAVE, SAVE_ACK,
-
-        // Hata
-        ERROR
+        // Diğer
+        SAVE, ERROR
     }
 
-    // Sınıf özellikleri
+    // Mesaj alanları
     private MessageType type;
-    private int length;
     private String userId;
     private String fileId;
-    private String data;
+    private Map<String, String> data;
     private long timestamp;
 
-    // Manual JSON parsing için yardımcı metotlar
+    // Sabitler
     private static final String DELIMITER = "|";
     private static final String MESSAGE_END = "\n";
+    private static final String DATA_SEPARATOR = ",";
+    private static final String KEY_VALUE_SEPARATOR = ":";
 
     // Constructors
     public Message() {
+        this.data = new HashMap<>();
         this.timestamp = System.currentTimeMillis();
     }
 
-    public Message(MessageType type, String userId, String fileId, String data) {
+    public Message(MessageType type, String userId, String fileId) {
+        this();
         this.type = type;
         this.userId = userId;
         this.fileId = fileId;
-        this.data = data != null ? data : "{}";
-        this.length = this.data.length();
-        this.timestamp = System.currentTimeMillis();
     }
 
-    public Message(MessageType type, String userId, String fileId, Object dataObject) {
-        this(type, userId, fileId, objectToJson(dataObject));
+    // Data ekleme metotları
+    public Message addData(String key, String value) {
+        if (key != null && value != null) {
+            data.put(key, value);
+        }
+        return this;
     }
 
-    // Ana serialize metodu
-    public String serialize() {
-        return String.format("%s%s%d%s%s%s%s%s%s%s%d%s",
-                type != null ? type.toString() : "NULL", DELIMITER,
-                length, DELIMITER,
-                userId != null ? userId : "null", DELIMITER,
-                fileId != null ? fileId : "null", DELIMITER,
-                data != null ? data : "{}", DELIMITER,
-                timestamp, MESSAGE_END);
+    public Message addData(String key, int value) {
+        return addData(key, String.valueOf(value));
     }
 
-    // Ana deserialize metodu
-    public static Message deserialize(String rawMessage) throws MessageParseException {
-        if (rawMessage == null || rawMessage.trim().isEmpty()) {
-            throw new MessageParseException("Boş mesaj");
-        }
-
-        // Son \n karakterini temizle
-        String cleanMessage = rawMessage.trim();
-        if (cleanMessage.endsWith(MESSAGE_END)) {
-            cleanMessage = cleanMessage.substring(0, cleanMessage.length() - 1);
-        }
-
-        // | karakteri ile ayır (maksimum 6 parça)
-        String[] parts = cleanMessage.split("\\" + DELIMITER, 6);
-
-        if (parts.length != 6) {
-            throw new MessageParseException("Geçersiz mesaj formatı. Beklenen 6 parça, bulunan: " + parts.length);
-        }
-
-        try {
-            Message message = new Message();
-
-            // MessageType parse et
-            message.type = MessageType.valueOf(parts[0]);
-
-            // Length parse et
-            message.length = Integer.parseInt(parts[1]);
-
-            // UserID parse et (null kontrolü)
-            message.userId = "null".equals(parts[2]) ? null : parts[2];
-
-            // FileID parse et (null kontrolü)
-            message.fileId = "null".equals(parts[3]) ? null : parts[3];
-
-            // Data parse et
-            message.data = parts[4];
-
-            // Data length kontrolü
-            if (message.data.length() != message.length) {
-                throw new MessageParseException("Data uzunluğu uyuşmazlığı. Beklenen: " +
-                        message.length + ", Gerçek: " + message.data.length());
-            }
-
-            // Timestamp parse et
-            message.timestamp = Long.parseLong(parts[5]);
-
-            return message;
-
-        } catch (IllegalArgumentException e) {
-            throw new MessageParseException("Mesaj parse hatası: " + e.getMessage());
-        }
+    // Data alma metotları
+    public String getData(String key) {
+        return data.get(key);
     }
 
-    // Data'yı JSON object olarak al - basit parsing
-    public String getDataValue(String key) {
-        if (data == null || data.equals("{}")) {
-            return null;
-        }
-
-        // Basit JSON parsing: {"key":"value"} formatı için
-        String searchKey = "\"" + key + "\":\"";
-        int startIndex = data.indexOf(searchKey);
-        if (startIndex == -1) {
-            return null;
-        }
-
-        startIndex += searchKey.length();
-        int endIndex = data.indexOf("\"", startIndex);
-        if (endIndex == -1) {
-            return null;
-        }
-
-        return data.substring(startIndex, endIndex);
-    }
-
-    // Integer değer al
-    public Integer getDataValueAsInt(String key) {
-        String value = getDataValue(key);
+    public Integer getDataAsInt(String key) {
+        String value = getData(key);
         if (value == null) return null;
 
         try {
@@ -159,95 +75,169 @@ public class Message {
         }
     }
 
-    // Data'yı set et (object'ten) - manual JSON creation
-    public void setDataFromObject(Object obj) {
-        this.data = objectToJson(obj);
-        this.length = this.data.length();
+    // Serialize - mesajı string'e çevir
+    public String serialize() {
+        StringBuilder sb = new StringBuilder();
+
+        // TYPE|USER_ID|FILE_ID|DATA|TIMESTAMP\n
+        sb.append(type != null ? type.name() : "NULL").append(DELIMITER);
+        sb.append(userId != null ? userId : "null").append(DELIMITER);
+        sb.append(fileId != null ? fileId : "null").append(DELIMITER);
+        sb.append(serializeData()).append(DELIMITER);
+        sb.append(timestamp).append(MESSAGE_END);
+
+        return sb.toString();
     }
 
-    // Basit JSON serialization
-    private static String objectToJson(Object obj) {
-        if (obj == null) return "{}";
-
-        if (obj instanceof ConnectData) {
-            ConnectData cd = (ConnectData) obj;
-            return String.format("{\"username\":\"%s\"}", cd.getUsername());
-        } else if (obj instanceof ConnectAckData) {
-            ConnectAckData cad = (ConnectAckData) obj;
-            return String.format("{\"status\":\"%s\",\"userId\":\"%s\"}",
-                    cad.getStatus(), cad.getUserId());
-        } else if (obj instanceof TextOperationData) {
-            TextOperationData tod = (TextOperationData) obj;
-            return String.format("{\"position\":\"%d\",\"text\":\"%s\"}",
-                    tod.getPosition(), escapeJson(tod.getText()));
-        } else if (obj instanceof TextDeleteData) {
-            TextDeleteData tdd = (TextDeleteData) obj;
-            return String.format("{\"position\":\"%d\",\"length\":\"%d\"}",
-                    tdd.getPosition(), tdd.getLength());
-        } else if (obj instanceof ErrorData) {
-            ErrorData ed = (ErrorData) obj;
-            return String.format("{\"code\":\"%d\",\"message\":\"%s\"}",
-                    ed.getCode(), escapeJson(ed.getMessage()));
+    // Data'yı serialize et: key1:value1,key2:value2
+    private String serializeData() {
+        if (data.isEmpty()) {
+            return "empty";
         }
 
-        return "{}";
+        StringBuilder sb = new StringBuilder();
+        boolean first = true;
+
+        for (Map.Entry<String, String> entry : data.entrySet()) {
+            if (!first) sb.append(DATA_SEPARATOR);
+            sb.append(entry.getKey()).append(KEY_VALUE_SEPARATOR).append(entry.getValue());
+            first = false;
+        }
+
+        return sb.toString();
     }
 
-    // JSON string escape
-    private static String escapeJson(String str) {
-        if (str == null) return "";
-        return str.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t");
+    // Deserialize - string'den mesaj oluştur
+    public static Message deserialize(String rawMessage) throws Exception {
+        if (rawMessage == null || rawMessage.trim().isEmpty()) {
+            throw new Exception("Boş mesaj");
+        }
+
+        // \n'i temizle
+        String cleanMessage = rawMessage.trim();
+        if (cleanMessage.endsWith(MESSAGE_END)) {
+            cleanMessage = cleanMessage.substring(0, cleanMessage.length() - 1);
+        }
+
+        // | ile ayır
+        String[] parts = cleanMessage.split("\\" + DELIMITER, 5);
+        if (parts.length != 5) {
+            throw new Exception("Geçersiz mesaj formatı: " + parts.length + " parça");
+        }
+
+        Message message = new Message();
+
+        // MessageType
+        try {
+            message.type = MessageType.valueOf(parts[0]);
+        } catch (IllegalArgumentException e) {
+            throw new Exception("Geçersiz mesaj tipi: " + parts[0]);
+        }
+
+        // User ID
+        message.userId = "null".equals(parts[1]) ? null : parts[1];
+
+        // File ID
+        message.fileId = "null".equals(parts[2]) ? null : parts[2];
+
+        // Data
+        message.parseData(parts[3]);
+
+        // Timestamp
+        try {
+            message.timestamp = Long.parseLong(parts[4]);
+        } catch (NumberFormatException e) {
+            message.timestamp = System.currentTimeMillis();
+        }
+
+        return message;
     }
 
-    // Validation metodu
+    // Data string'ini parse et
+    private void parseData(String dataString) {
+        if ("empty".equals(dataString) || dataString.trim().isEmpty()) {
+            return;
+        }
+
+        String[] pairs = dataString.split(DATA_SEPARATOR);
+
+        for (String pair : pairs) {
+            String[] keyValue = pair.split(KEY_VALUE_SEPARATOR, 2);
+            if (keyValue.length == 2) {
+                data.put(keyValue[0].trim(), keyValue[1].trim());
+            }
+        }
+    }
+
+    // Factory metotları - yaygın mesajlar için
+    public static Message createConnect(String username) {
+        return new Message(MessageType.CONNECT, null, null)
+                .addData("username", username);
+    }
+
+    public static Message createConnectAck(String userId, boolean success) {
+        return new Message(MessageType.CONNECT_ACK, userId, null)
+                .addData("status", success ? "success" : "fail");
+    }
+
+    public static Message createFileList() {
+        return new Message(MessageType.FILE_LIST, null, null);
+    }
+
+    public static Message createFileCreate(String userId, String fileName) {
+        return new Message(MessageType.FILE_CREATE, userId, null)
+                .addData("name", fileName);
+    }
+
+    public static Message createFileOpen(String userId, String fileId) {
+        return new Message(MessageType.FILE_OPEN, userId, fileId);
+    }
+
+    public static Message createFileContent(String userId, String fileId, String content) {
+        return new Message(MessageType.FILE_CONTENT, userId, fileId)
+                .addData("content", content);
+    }
+
+    public static Message createTextInsert(String userId, String fileId, int position, String text) {
+        return new Message(MessageType.TEXT_INSERT, userId, fileId)
+                .addData("position", position)
+                .addData("text", text);
+    }
+
+    public static Message createTextDelete(String userId, String fileId, int position, int length) {
+        return new Message(MessageType.TEXT_DELETE, userId, fileId)
+                .addData("position", position)
+                .addData("length", length);
+    }
+
+    public static Message createTextUpdate(String userId, String fileId, String operation, int position, String text) {
+        return new Message(MessageType.TEXT_UPDATE, userId, fileId)
+                .addData("operation", operation)
+                .addData("position", position)
+                .addData("text", text);
+    }
+
+    public static Message createSave(String userId, String fileId) {
+        return new Message(MessageType.SAVE, userId, fileId);
+    }
+
+    public static Message createError(String userId, String errorMessage) {
+        return new Message(MessageType.ERROR, userId, null)
+                .addData("message", errorMessage);
+    }
+
+    public static Message createDisconnect(String userId) {
+        return new Message(MessageType.DISCONNECT, userId, null);
+    }
+
+    // Validation
     public boolean isValid() {
-        return type != null &&
-                data != null &&
-                length >= 0 &&
-                data.length() == length &&
-                timestamp > 0;
+        return type != null && timestamp > 0;
     }
 
-    // Factory metotları (yaygın mesajlar için)
-    public static Message createConnectMessage(String username) {
-        return new Message(MessageType.CONNECT, null, null,
-                String.format("{\"username\":\"%s\"}", username));
-    }
-
-    public static Message createConnectAckMessage(String userId, boolean success) {
-        return new Message(MessageType.CONNECT_ACK, userId, null,
-                String.format("{\"status\":\"%s\",\"userId\":\"%s\"}",
-                        success ? "success" : "fail", userId));
-    }
-
-    public static Message createTextInsertMessage(String userId, String fileId, int position, String text) {
-        return new Message(MessageType.TEXT_INSERT, userId, fileId,
-                String.format("{\"position\":\"%d\",\"text\":\"%s\"}",
-                        position, escapeJson(text)));
-    }
-
-    public static Message createTextDeleteMessage(String userId, String fileId, int position, int length) {
-        return new Message(MessageType.TEXT_DELETE, userId, fileId,
-                String.format("{\"position\":\"%d\",\"length\":\"%d\"}",
-                        position, length));
-    }
-
-    public static Message createErrorMessage(String userId, int errorCode, String errorMessage) {
-        return new Message(MessageType.ERROR, userId, null,
-                String.format("{\"code\":\"%d\",\"message\":\"%s\"}",
-                        errorCode, escapeJson(errorMessage)));
-    }
-
-    // Getters ve Setters
+    // Getters & Setters
     public MessageType getType() { return type; }
     public void setType(MessageType type) { this.type = type; }
-
-    public int getLength() { return length; }
-    public void setLength(int length) { this.length = length; }
 
     public String getUserId() { return userId; }
     public void setUserId(String userId) { this.userId = userId; }
@@ -255,114 +245,13 @@ public class Message {
     public String getFileId() { return fileId; }
     public void setFileId(String fileId) { this.fileId = fileId; }
 
-    public String getData() { return data; }
-    public void setData(String data) {
-        this.data = data;
-        this.length = data != null ? data.length() : 0;
-    }
-
     public long getTimestamp() { return timestamp; }
     public void setTimestamp(long timestamp) { this.timestamp = timestamp; }
 
-    // ToString metodu (debugging için)
+    // Debug
     @Override
     public String toString() {
-        return String.format("Message{type=%s, userId='%s', fileId='%s', data='%s', timestamp=%d}",
+        return String.format("Message{type=%s, userId='%s', fileId='%s', data=%s, timestamp=%d}",
                 type, userId, fileId, data, timestamp);
     }
-
-    // Equals ve hashCode
-    @Override
-    public boolean equals(Object obj) {
-        if (this == obj) return true;
-        if (obj == null || getClass() != obj.getClass()) return false;
-
-        Message message = (Message) obj;
-        return length == message.length &&
-                timestamp == message.timestamp &&
-                type == message.type &&
-                java.util.Objects.equals(userId, message.userId) &&
-                java.util.Objects.equals(fileId, message.fileId) &&
-                java.util.Objects.equals(data, message.data);
-    }
-
-    @Override
-    public int hashCode() {
-        return java.util.Objects.hash(type, length, userId, fileId, data, timestamp);
-    }
 }
-
-// Data sınıfları (JSON için)
-class ConnectData {
-    private String username;
-
-    public ConnectData(String username) {
-        this.username = username;
-    }
-
-    public String getUsername() { return username; }
-    public void setUsername(String username) { this.username = username; }
-}
-
-class ConnectAckData {
-    private String status;
-    private String userId;
-
-    public ConnectAckData(String status, String userId) {
-        this.status = status;
-        this.userId = userId;
-    }
-
-    public String getStatus() { return status; }
-    public void setStatus(String status) { this.status = status; }
-    public String getUserId() { return userId; }
-    public void setUserId(String userId) { this.userId = userId; }
-}
-
-class TextOperationData {
-    private int position;
-    private String text;
-
-    public TextOperationData(int position, String text) {
-        this.position = position;
-        this.text = text;
-    }
-
-    public int getPosition() { return position; }
-    public void setPosition(int position) { this.position = position; }
-    public String getText() { return text; }
-    public void setText(String text) { this.text = text; }
-}
-
-class TextDeleteData {
-    private int position;
-    private int length;
-
-    public TextDeleteData(int position, int length) {
-        this.position = position;
-        this.length = length;
-    }
-
-    public int getPosition() { return position; }
-    public void setPosition(int position) { this.position = position; }
-    public int getLength() { return length; }
-    public void setLength(int length) { this.length = length; }
-}
-
-class ErrorData {
-    private int code;
-    private String message;
-
-    public ErrorData(int code, String message) {
-        this.code = code;
-        this.message = message;
-    }
-
-    public int getCode() { return code; }
-    public void setCode(int code) { this.code = code; }
-    public String getMessage() { return message; }
-    public void setMessage(String message) { this.message = message; }
-}
-
-
-

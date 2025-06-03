@@ -1,9 +1,6 @@
 package Server;
 
-import Common.Message;
-import Common.Protocol;
-import Common.Utils;
-
+import Common.*;
 import java.io.*;
 import java.net.*;
 import java.util.*;
@@ -11,12 +8,12 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * MTP (Multi-user Text Protocol) Ana Sunucu Sınıfı
- * Çok kullanıcılı metin editörü için TCP sunucusu
+ * MTP (Multi-user Text Protocol) Ana Sunucu
+ * Robust OT entegreli DocumentManager ile çalışır
  */
 public class Server {
 
-    // Sunucu yapılandırması
+    // Server konfigürasyonu
     private final int port;
     private ServerSocket serverSocket;
     private boolean isRunning = false;
@@ -29,18 +26,21 @@ public class Server {
     private final Map<String, ClientHandler> connectedClients = new ConcurrentHashMap<>();
     private final AtomicInteger clientCounter = new AtomicInteger(0);
 
-    // Dokuman yönetimi
+    // Document yönetimi
     private DocumentManager documentManager;
 
+    // Server başlangıç zamanı
+    private final long startTime;
+
     /**
-     * Constructor - varsayılan port ile
+     * Constructor - varsayılan port
      */
     public Server() {
         this(Protocol.DEFAULT_PORT);
     }
 
     /**
-     * Constructor - özel port ile
+     * Constructor - özel port
      */
     public Server(int port) {
         if (!Protocol.isValidPort(port)) {
@@ -48,21 +48,20 @@ public class Server {
         }
 
         this.port = port;
+        this.startTime = System.currentTimeMillis();
         this.documentManager = new DocumentManager();
-
-        // Thread pool oluştur
         this.clientThreadPool = Executors.newFixedThreadPool(Protocol.MAX_CONNECTIONS);
 
-        Utils.log("Server oluşturuldu. Port: " + port);
+        Protocol.log("Server oluşturuldu. Port: " + port);
     }
 
     /**
-     * Sunucuyu başlatır
+     * Sunucuyu başlat
      */
     public void start() throws IOException {
         synchronized (serverLock) {
             if (isRunning) {
-                Utils.log("Server zaten çalışıyor!");
+                Protocol.log("Server zaten çalışıyor!");
                 return;
             }
 
@@ -72,14 +71,16 @@ public class Server {
                 serverSocket.setReuseAddress(true);
 
                 isRunning = true;
-                Utils.log("Server başlatıldı. Port: " + port);
-                Utils.log("Maksimum bağlantı: " + Protocol.MAX_CONNECTIONS);
+                Protocol.log("=== MTP SERVER BAŞLATILDI ===");
+                Protocol.log("Port: " + port);
+                Protocol.log("Maksimum bağlantı: " + Protocol.MAX_CONNECTIONS);
+                Protocol.log("Documents klasörü: " + Protocol.DOCUMENTS_FOLDER);
 
-                // Ana server loop'u
+                // Ana server loop
                 acceptClients();
 
             } catch (IOException e) {
-                Utils.logError("Server başlatma hatası", e);
+                Protocol.logError("Server başlatma hatası", e);
                 throw e;
             }
         }
@@ -89,7 +90,7 @@ public class Server {
      * İstemci bağlantılarını kabul eden ana loop
      */
     private void acceptClients() {
-        Utils.log("İstemci bağlantıları dinleniyor...");
+        Protocol.log("İstemci bağlantıları dinleniyor...");
 
         while (isRunning && !serverSocket.isClosed()) {
             try {
@@ -98,7 +99,7 @@ public class Server {
 
                 // Maksimum bağlantı kontrolü
                 if (connectedClients.size() >= Protocol.MAX_CONNECTIONS) {
-                    Utils.log("Maksimum bağlantı sayısına ulaşıldı. Bağlantı reddedildi: " +
+                    Protocol.log("Maksimum bağlantı sayısına ulaşıldı. Reddedilen: " +
                             clientSocket.getInetAddress());
 
                     sendMaxConnectionError(clientSocket);
@@ -106,74 +107,75 @@ public class Server {
                     continue;
                 }
 
-                // İstemci bilgilerini log'la
-                String clientIP = clientSocket.getInetAddress().getHostAddress();
-                int clientPort = clientSocket.getPort();
-                Utils.log("Yeni bağlantı: " + clientIP + ":" + clientPort);
+                // İstemci bilgileri
+                String clientInfo = clientSocket.getInetAddress().getHostAddress() + ":" +
+                        clientSocket.getPort();
+                Protocol.log("Yeni bağlantı: " + clientInfo);
 
-                // ClientHandler oluştur ve thread pool'a ekle
+                // ClientHandler oluştur ve başlat
                 String tempClientId = "temp_" + clientCounter.incrementAndGet();
                 ClientHandler clientHandler = new ClientHandler(this, clientSocket, tempClientId);
 
                 clientThreadPool.submit(clientHandler);
 
             } catch (SocketException e) {
-                // Server kapatılırken normal bir durum
+                // Server kapatılırken normal
                 if (isRunning) {
-                    Utils.logError("Socket hatası", e);
+                    Protocol.logError("Socket hatası", e);
                 }
             } catch (IOException e) {
-                Utils.logError("İstemci kabul etme hatası", e);
+                Protocol.logError("İstemci kabul etme hatası", e);
             }
         }
     }
 
     /**
-     * Maksimum bağlantı hatası gönderir
+     * Maksimum bağlantı hatası gönder
      */
     private void sendMaxConnectionError(Socket clientSocket) {
         try {
-            Message errorMsg = Message.createErrorMessage(null,
-                    Protocol.ERROR_MAX_CONNECTIONS,
-                    Protocol.getErrorMessage(Protocol.ERROR_MAX_CONNECTIONS));
-
+            Message errorMsg = Message.createError(null, Protocol.ERROR_MAX_CONNECTIONS);
             Utils.writeToSocket(clientSocket, errorMsg.serialize());
         } catch (IOException e) {
-            Utils.logError("Hata mesajı gönderilemedi", e);
+            Protocol.logError("Hata mesajı gönderilemedi", e);
         }
     }
 
+    // === CLIENT MANAGEMENT ===
+
     /**
-     * İstemciyi sunucuya kaydet
+     * İstemciyi kaydet
      */
     public boolean registerClient(String userId, ClientHandler clientHandler) {
         if (userId == null || clientHandler == null) {
             return false;
         }
 
-        // Kullanıcı zaten bağlı mı kontrol et
+        // Kullanıcı zaten bağlı mı?
         if (connectedClients.containsKey(userId)) {
-            Utils.log("Kullanıcı zaten bağlı: " + userId);
+            Protocol.log("Kullanıcı zaten bağlı: " + userId);
             return false;
         }
 
         connectedClients.put(userId, clientHandler);
-        Utils.log("İstemci kaydedildi: " + userId + " (Toplam: " + connectedClients.size() + ")");
+        Protocol.log("İstemci kaydedildi: " + userId + " (Toplam: " + connectedClients.size() + ")");
 
         return true;
     }
 
     /**
-     * İstemciyi sunucudan kaldır
+     * İstemciyi kaldır
      */
     public void unregisterClient(String userId) {
         if (userId != null && connectedClients.remove(userId) != null) {
-            Utils.log("İstemci kaldırıldı: " + userId + " (Toplam: " + connectedClients.size() + ")");
+            Protocol.log("İstemci kaldırıldı: " + userId + " (Toplam: " + connectedClients.size() + ")");
         }
     }
 
+    // === BROADCASTING ===
+
     /**
-     * Belirli bir dosyayı düzenleyen tüm kullanıcılara mesaj gönder
+     * Belirli dosyayı düzenleyen kullanıcılara broadcast
      */
     public void broadcastToFile(String fileId, Message message, String excludeUserId) {
         if (fileId == null || message == null) {
@@ -185,21 +187,23 @@ public class Server {
 
         for (String userId : fileUsers) {
             if (userId.equals(excludeUserId)) {
-                continue; // Gönderen kullanıcıyı hariç tut
+                continue; // Gönderen hariç
             }
 
             ClientHandler client = connectedClients.get(userId);
-            if (client != null) {
+            if (client != null && client.isConnected()) {
                 client.sendMessage(message);
                 sentCount++;
             }
         }
 
-        Utils.log("Dosya broadcast: " + fileId + " -> " + sentCount + " kullanıcı");
+        if (sentCount > 0) {
+            Protocol.log("Dosya broadcast: " + fileId + " -> " + sentCount + " kullanıcı");
+        }
     }
 
     /**
-     * Tüm bağlı kullanıcılara mesaj gönder
+     * Tüm bağlı kullanıcılara broadcast
      */
     public void broadcastToAll(Message message, String excludeUserId) {
         if (message == null) {
@@ -213,14 +217,18 @@ public class Server {
             ClientHandler client = entry.getValue();
 
             if (userId.equals(excludeUserId)) {
-                continue; // Gönderen kullanıcıyı hariç tut
+                continue; // Gönderen hariç
             }
 
-            client.sendMessage(message);
-            sentCount++;
+            if (client.isConnected()) {
+                client.sendMessage(message);
+                sentCount++;
+            }
         }
 
-        Utils.log("Global broadcast -> " + sentCount + " kullanıcı");
+        if (sentCount > 0) {
+            Protocol.log("Global broadcast -> " + sentCount + " kullanıcı");
+        }
     }
 
     /**
@@ -232,7 +240,7 @@ public class Server {
         }
 
         ClientHandler client = connectedClients.get(userId);
-        if (client != null) {
+        if (client != null && client.isConnected()) {
             client.sendMessage(message);
             return true;
         }
@@ -240,22 +248,24 @@ public class Server {
         return false;
     }
 
+    // === SERVER INFO ===
+
     /**
-     * Bağlı kullanıcı sayısını döndür
+     * Bağlı kullanıcı sayısı
      */
     public int getConnectedUserCount() {
         return connectedClients.size();
     }
 
     /**
-     * Bağlı kullanıcı listesini döndür
+     * Bağlı kullanıcı listesi
      */
     public List<String> getConnectedUsers() {
         return new ArrayList<>(connectedClients.keySet());
     }
 
     /**
-     * Belirli kullanıcının bağlı olup olmadığını kontrol et
+     * Kullanıcının bağlı olup olmadığını kontrol et
      */
     public boolean isUserConnected(String userId) {
         return userId != null && connectedClients.containsKey(userId);
@@ -269,55 +279,6 @@ public class Server {
     }
 
     /**
-     * Sunucuyu durdur
-     */
-    public void stop() {
-        synchronized (serverLock) {
-            if (!isRunning) {
-                Utils.log("Server zaten durdurulmuş!");
-                return;
-            }
-
-            Utils.log("Server durduruluyor...");
-            isRunning = false;
-
-            try {
-                // Tüm istemcilere disconnect mesajı gönder
-                Message disconnectMsg = new Message(Message.MessageType.DISCONNECT,
-                        null, null, "{}");
-                broadcastToAll(disconnectMsg, null);
-
-                // Socket'i kapat
-                if (serverSocket != null && !serverSocket.isClosed()) {
-                    serverSocket.close();
-                }
-
-                // Thread pool'u kapat
-                if (clientThreadPool != null) {
-                    clientThreadPool.shutdown();
-
-                    // 5 saniye bekle
-                    if (!clientThreadPool.awaitTermination(5, TimeUnit.SECONDS)) {
-                        Utils.log("Thread pool zorla kapatılıyor...");
-                        clientThreadPool.shutdownNow();
-                    }
-                }
-
-                // Tüm istemci bağlantılarını kapat
-                for (ClientHandler client : connectedClients.values()) {
-                    client.disconnect();
-                }
-                connectedClients.clear();
-
-                Utils.log("Server başarıyla durduruldu.");
-
-            } catch (Exception e) {
-                Utils.logError("Server durdurma hatası", e);
-            }
-        }
-    }
-
-    /**
      * Sunucunun çalışıp çalışmadığını kontrol et
      */
     public boolean isRunning() {
@@ -325,23 +286,31 @@ public class Server {
     }
 
     /**
-     * Server istatistiklerini döndür
+     * Server istatistikleri
      */
     public String getServerStats() {
         StringBuilder stats = new StringBuilder();
-        stats.append("=== SERVER İSTATİSTİKLERİ ===\n");
+        stats.append("=== MTP SERVER İSTATİSTİKLERİ ===\n");
+        stats.append("Proje: ").append(Protocol.PROJECT_NAME).append(" v").append(Protocol.VERSION).append("\n");
         stats.append("Port: ").append(port).append("\n");
         stats.append("Durum: ").append(isRunning ? "Çalışıyor" : "Durdurulmuş").append("\n");
         stats.append("Bağlı Kullanıcılar: ").append(connectedClients.size()).append("/").append(Protocol.MAX_CONNECTIONS).append("\n");
-        stats.append("Açık Dosyalar: ").append(documentManager.getOpenFileCount()).append("\n");
-        stats.append("Memory Kullanımı: ").append(Utils.getMemoryUsage()).append(" MB\n");
+
+        // Document istatistikleri
+        List<DocumentManager.DocumentInfo> docs = documentManager.getAllDocuments();
+        int openFiles = (int) docs.stream().filter(d -> d.getUserCount() > 0).count();
+        stats.append("Toplam Dosyalar: ").append(docs.size()).append("\n");
+        stats.append("Açık Dosyalar: ").append(openFiles).append("\n");
+
         stats.append("Çalışma Süresi: ").append(getUptimeString()).append("\n");
+        stats.append("==============================");
 
         return stats.toString();
     }
 
-    private long startTime = System.currentTimeMillis();
-
+    /**
+     * Uptime hesapla
+     */
     private String getUptimeString() {
         long uptimeMs = System.currentTimeMillis() - startTime;
         long seconds = uptimeMs / 1000;
@@ -352,34 +321,110 @@ public class Server {
                 hours, minutes % 60, seconds % 60);
     }
 
+    // === SHUTDOWN ===
+
     /**
-     * Ana method - sunucuyu başlatır
+     * Sunucuyu güvenli şekilde durdur
+     */
+    public void stop() {
+        synchronized (serverLock) {
+            if (!isRunning) {
+                Protocol.log("Server zaten durdurulmuş!");
+                return;
+            }
+
+            Protocol.log("=== SERVER DURDURULUYOR ===");
+            isRunning = false;
+
+            try {
+                // Tüm istemcilere disconnect bildir
+                Message disconnectMsg = Message.createDisconnect(null);
+                broadcastToAll(disconnectMsg, null);
+
+                // Kısa bekle (mesajların iletilmesi için)
+                Thread.sleep(1000);
+
+                // Socket'i kapat
+                if (serverSocket != null && !serverSocket.isClosed()) {
+                    serverSocket.close();
+                }
+
+                // Thread pool'u kapat
+                if (clientThreadPool != null) {
+                    clientThreadPool.shutdown();
+
+                    if (!clientThreadPool.awaitTermination(5, TimeUnit.SECONDS)) {
+                        Protocol.log("Thread pool zorla kapatılıyor...");
+                        clientThreadPool.shutdownNow();
+                    }
+                }
+
+                // Tüm client bağlantılarını kapat
+                for (ClientHandler client : connectedClients.values()) {
+                    client.disconnect();
+                }
+                connectedClients.clear();
+
+                // DocumentManager'ı kapat
+                if (documentManager != null) {
+                    documentManager.shutdown();
+                }
+
+                Protocol.log("Server başarıyla durduruldu.");
+
+            } catch (Exception e) {
+                Protocol.logError("Server durdurma hatası", e);
+            }
+        }
+    }
+
+    // === MAIN METHOD ===
+
+    /**
+     * Ana method - sunucuyu başlat
      */
     public static void main(String[] args) {
+        System.out.println("=== " + Protocol.PROJECT_NAME + " v" + Protocol.VERSION + " ===");
+
         int port = Protocol.DEFAULT_PORT;
 
         // Komut satırından port al
         if (args.length > 0) {
             try {
                 port = Integer.parseInt(args[0]);
+                if (!Protocol.isValidPort(port)) {
+                    throw new NumberFormatException("Port range: 1-65535");
+                }
             } catch (NumberFormatException e) {
-                System.err.println("Geçersiz port numarası: " + args[0]);
+                System.err.println("Geçersiz port: " + args[0] + " (" + e.getMessage() + ")");
                 System.err.println("Varsayılan port kullanılıyor: " + Protocol.DEFAULT_PORT);
+                port = Protocol.DEFAULT_PORT;
             }
         }
 
         Server server = new Server(port);
 
-        // Graceful shutdown için shutdown hook ekle
+        // Graceful shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            Utils.log("Shutdown sinyali alındı...");
+            Protocol.log("Shutdown sinyali alındı (Ctrl+C)...");
             server.stop();
         }));
+
+        // Server istatistiklerini periyodik göster
+        Timer statsTimer = new Timer(true);
+        statsTimer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                if (server.isRunning() && server.getConnectedUserCount() > 0) {
+                    Protocol.log("Aktif kullanıcı: " + server.getConnectedUserCount());
+                }
+            }
+        }, 60000, 60000); // Her dakika
 
         try {
             server.start();
         } catch (IOException e) {
-            Utils.logError("Server başlatılamadı", e);
+            Protocol.logError("Server başlatılamadı", e);
             System.exit(1);
         }
     }
