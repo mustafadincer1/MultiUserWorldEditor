@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * İstemci bağlantısını handle eden sınıf
- * Robust OT entegreli DocumentManager ile çalışır
+ * Robust OT entegreli DocumentManager ve UserManager ile çalışır
  */
 public class ClientHandler implements Runnable {
 
@@ -111,8 +111,17 @@ public class ClientHandler implements Runnable {
 
             // Mesaj tipine göre işle
             switch (message.getType()) {
+                case REGISTER:
+                    handleRegister(message);
+                    break;
+
+                case LOGIN:
+                    handleLogin(message);
+                    break;
+
                 case CONNECT:
-                    handleConnect(message);
+                    // Eski sistem - artık desteklenmiyor
+                    sendError("CONNECT komutu desteklenmiyor, LOGIN kullanın");
                     break;
 
                 case DISCONNECT:
@@ -157,39 +166,79 @@ public class ClientHandler implements Runnable {
     // === MESSAGE HANDLERS ===
 
     /**
-     * CONNECT mesajını işle
+     * REGISTER mesajını işle
      */
-    private void handleConnect(Message message) {
+    private void handleRegister(Message message) {
         if (isAuthenticated.get()) {
-            sendError("Zaten bağlısınız");
+            sendError("Zaten giriş yapmışsınız");
             return;
         }
 
         String username = message.getData("username");
+        String password = message.getData("password");
 
-        if (!Protocol.isValidUsername(username)) {
-            sendError("Geçersiz kullanıcı adı");
+        if (username == null || password == null) {
+            sendError("Kullanıcı adı ve şifre gerekli");
             return;
         }
 
-        // Unique user ID oluştur
-        String newUserId = Protocol.generateUserId();
+        UserManager.RegisterResult result = server.getUserManager().registerUser(username, password);
 
-        // Server'a kaydet
-        if (server.registerClient(newUserId, this)) {
-            this.userId = newUserId;
+        Message response = Message.createRegisterAck(result.success, result.message);
+        sendMessage(response);
+
+        if (result.success) {
+            Protocol.log("Yeni kullanıcı kaydı: " + username + " from " + getTempClientId());
+        } else {
+            Protocol.log("Kayıt başarısız: " + username + " - " + result.message);
+        }
+    }
+
+    /**
+     * LOGIN mesajını işle
+     */
+    private void handleLogin(Message message) {
+        if (isAuthenticated.get()) {
+            sendError("Zaten giriş yapmışsınız");
+            return;
+        }
+
+        String username = message.getData("username");
+        String password = message.getData("password");
+
+        if (username == null || password == null) {
+            sendError("Kullanıcı adı ve şifre gerekli");
+            return;
+        }
+
+        UserManager.LoginResult result = server.getUserManager().loginUser(username, password);
+
+        if (result.success) {
+            // Başarılı giriş
+            this.userId = result.userId;
             this.username = username;
             isAuthenticated.set(true);
 
-            // Başarılı bağlantı
-            Message response = Message.createConnectAck(userId, true);
-            sendMessage(response);
+            // Server'a kaydet
+            if (server.registerClient(userId, this)) {
+                Protocol.log("Kullanıcı giriş yaptı: " + username + " (" + userId + ")");
+            } else {
+                // Server kayıt hatası - session'ı temizle
+                server.getUserManager().logoutUser(userId);
+                this.userId = null;
+                this.username = null;
+                isAuthenticated.set(false);
 
-            Protocol.log("Kullanıcı bağlandı: " + username + " (" + userId + ")");
-
+                Message response = Message.createLoginAck(null, false, "Server kayıt hatası");
+                sendMessage(response);
+                return;
+            }
         } else {
-            sendError("Bağlantı hatası");
+            Protocol.log("Giriş başarısız: " + username + " - " + result.message);
         }
+
+        Message response = Message.createLoginAck(result.userId, result.success, result.message);
+        sendMessage(response);
     }
 
     /**
@@ -210,7 +259,7 @@ public class ClientHandler implements Runnable {
             List<DocumentManager.DocumentInfo> files =
                     server.getDocumentManager().getAllDocuments();
 
-            // JSON formatında dosya listesi
+            // Basit format'ta dosya listesi
             StringBuilder fileListData = new StringBuilder();
 
             for (int i = 0; i < files.size(); i++) {
@@ -471,6 +520,13 @@ public class ClientHandler implements Runnable {
     }
 
     /**
+     * Temp client ID döndür (debug için)
+     */
+    private String getTempClientId() {
+        return tempClientId;
+    }
+
+    /**
      * Bağlantıyı kapat
      */
     public void disconnect() {
@@ -487,6 +543,11 @@ public class ClientHandler implements Runnable {
                     server.getDocumentManager().closeDocument(fileId, userId);
                 }
                 openFiles.clear();
+            }
+
+            // UserManager'dan logout
+            if (userId != null) {
+                server.getUserManager().logoutUser(userId);
             }
 
             // Server'dan kayıt sil
@@ -576,7 +637,7 @@ public class ClientHandler implements Runnable {
      */
     @Override
     public String toString() {
-        return String.format("ClientHandler{userId='%s', username='%s', connected=%s, authenticated=%s, openFiles=%d}",
-                getUserId(), username, isConnected.get(), isAuthenticated.get(), openFiles.size());
+        return String.format("ClientHandler{userId='%s', username='%s', tempId='%s', connected=%s, authenticated=%s, openFiles=%d}",
+                getUserId(), username, tempClientId, isConnected.get(), isAuthenticated.get(), openFiles.size());
     }
 }

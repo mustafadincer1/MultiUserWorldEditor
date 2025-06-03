@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * MTP (Multi-user Text Protocol) Ana Sunucu
- * Robust OT entegreli DocumentManager ile çalışır
+ * Robust OT entegreli DocumentManager ve UserManager ile çalışır
  */
 public class Server {
 
@@ -26,8 +26,9 @@ public class Server {
     private final Map<String, ClientHandler> connectedClients = new ConcurrentHashMap<>();
     private final AtomicInteger clientCounter = new AtomicInteger(0);
 
-    // Document yönetimi
+    // Manager'lar
     private DocumentManager documentManager;
+    private UserManager userManager;
 
     // Server başlangıç zamanı
     private final long startTime;
@@ -49,6 +50,9 @@ public class Server {
 
         this.port = port;
         this.startTime = System.currentTimeMillis();
+
+        // Manager'ları başlat
+        this.userManager = new UserManager();
         this.documentManager = new DocumentManager();
         this.clientThreadPool = Executors.newFixedThreadPool(Protocol.MAX_CONNECTIONS);
 
@@ -75,6 +79,7 @@ public class Server {
                 Protocol.log("Port: " + port);
                 Protocol.log("Maksimum bağlantı: " + Protocol.MAX_CONNECTIONS);
                 Protocol.log("Documents klasörü: " + Protocol.DOCUMENTS_FOLDER);
+                Protocol.log("Kayıtlı kullanıcı sayısı: " + userManager.getTotalUserCount());
 
                 // Ana server loop
                 acceptClients();
@@ -157,8 +162,17 @@ public class Server {
             return false;
         }
 
+        // UserManager'da session var mı?
+        if (!userManager.isValidSession(userId)) {
+            Protocol.log("Geçersiz session: " + userId);
+            return false;
+        }
+
         connectedClients.put(userId, clientHandler);
         Protocol.log("İstemci kaydedildi: " + userId + " (Toplam: " + connectedClients.size() + ")");
+
+        // Welcome mesajı gönder
+        sendWelcomeMessage(clientHandler);
 
         return true;
     }
@@ -169,6 +183,29 @@ public class Server {
     public void unregisterClient(String userId) {
         if (userId != null && connectedClients.remove(userId) != null) {
             Protocol.log("İstemci kaldırıldı: " + userId + " (Toplam: " + connectedClients.size() + ")");
+        }
+    }
+
+    /**
+     * Welcome mesajı gönder
+     */
+    private void sendWelcomeMessage(ClientHandler clientHandler) {
+        try {
+            String welcomeText = String.format(
+                    "Hoş geldiniz! Server: %s v%s | Aktif kullanıcı: %d | Toplam dosya: %d",
+                    Protocol.PROJECT_NAME,
+                    Protocol.VERSION,
+                    connectedClients.size(),
+                    documentManager.getAllDocuments().size()
+            );
+
+            // Sistem mesajı olarak gönder
+            Message welcomeMsg = new Message(Message.MessageType.ERROR, null, null)
+                    .addData("message", welcomeText);
+            clientHandler.sendMessage(welcomeMsg);
+
+        } catch (Exception e) {
+            Protocol.logError("Welcome mesajı gönderilemedi", e);
         }
     }
 
@@ -248,6 +285,63 @@ public class Server {
         return false;
     }
 
+    /**
+     * Sistem duyurusu gönder
+     */
+    public void broadcastAnnouncement(String announcement) {
+        if (announcement == null || announcement.trim().isEmpty()) {
+            return;
+        }
+
+        Message announcementMsg = Message.createError(null, "DUYURU: " + announcement);
+        broadcastToAll(announcementMsg, null);
+
+        Protocol.log("Sistem duyurusu gönderildi: " + announcement);
+    }
+
+    // === USER MANAGEMENT ===
+
+    /**
+     * Aktif kullanıcı listesi (username ile)
+     */
+    public List<String> getActiveUsernames() {
+        List<String> usernames = new ArrayList<>();
+
+        for (String userId : connectedClients.keySet()) {
+            String username = userManager.getUsernameByUserId(userId);
+            if (username != null) {
+                usernames.add(username);
+            }
+        }
+
+        return usernames;
+    }
+
+    /**
+     * Kullanıcıyı zorla çıkar
+     */
+    public boolean kickUser(String username, String reason) {
+        String userId = userManager.getUserIdByUsername(username);
+        if (userId == null) {
+            return false;
+        }
+
+        ClientHandler client = connectedClients.get(userId);
+        if (client != null) {
+            // Kick mesajı gönder
+            Message kickMsg = Message.createError(userId, "Sunucudan çıkarıldınız: " + reason);
+            client.sendMessage(kickMsg);
+
+            // Bağlantıyı kapat
+            client.disconnect();
+
+            Protocol.log("Kullanıcı çıkarıldı: " + username + " - " + reason);
+            return true;
+        }
+
+        return false;
+    }
+
     // === SERVER INFO ===
 
     /**
@@ -279,6 +373,13 @@ public class Server {
     }
 
     /**
+     * UserManager'a erişim
+     */
+    public UserManager getUserManager() {
+        return userManager;
+    }
+
+    /**
      * Sunucunun çalışıp çalışmadığını kontrol et
      */
     public boolean isRunning() {
@@ -296,6 +397,10 @@ public class Server {
         stats.append("Durum: ").append(isRunning ? "Çalışıyor" : "Durdurulmuş").append("\n");
         stats.append("Bağlı Kullanıcılar: ").append(connectedClients.size()).append("/").append(Protocol.MAX_CONNECTIONS).append("\n");
 
+        // User istatistikleri
+        stats.append("Kayıtlı Kullanıcılar: ").append(userManager.getTotalUserCount()).append("\n");
+        stats.append("Aktif Sessionlar: ").append(userManager.getActiveUserCount()).append("\n");
+
         // Document istatistikleri
         List<DocumentManager.DocumentInfo> docs = documentManager.getAllDocuments();
         int openFiles = (int) docs.stream().filter(d -> d.getUserCount() > 0).count();
@@ -303,6 +408,13 @@ public class Server {
         stats.append("Açık Dosyalar: ").append(openFiles).append("\n");
 
         stats.append("Çalışma Süresi: ").append(getUptimeString()).append("\n");
+
+        // Aktif kullanıcı isimleri
+        List<String> activeUsernames = getActiveUsernames();
+        if (!activeUsernames.isEmpty()) {
+            stats.append("Aktif Kullanıcılar: ").append(String.join(", ", activeUsernames)).append("\n");
+        }
+
         stats.append("==============================");
 
         return stats.toString();
@@ -319,6 +431,99 @@ public class Server {
 
         return String.format("%d saat, %d dakika, %d saniye",
                 hours, minutes % 60, seconds % 60);
+    }
+
+    /**
+     * Server health check
+     */
+    public boolean isHealthy() {
+        return isRunning &&
+                !serverSocket.isClosed() &&
+                documentManager != null &&
+                userManager != null;
+    }
+
+    // === ADMIN COMMANDS ===
+
+    /**
+     * Server konsol komutları
+     */
+    public void handleConsoleCommand(String command) {
+        if (command == null || command.trim().isEmpty()) {
+            return;
+        }
+
+        String[] parts = command.trim().split("\\s+");
+        String cmd = parts[0].toLowerCase();
+
+        switch (cmd) {
+            case "stats":
+            case "status":
+                System.out.println(getServerStats());
+                break;
+
+            case "users":
+                List<String> activeUsers = getActiveUsernames();
+                System.out.println("Aktif kullanıcılar (" + activeUsers.size() + "):");
+                for (String username : activeUsers) {
+                    System.out.println("  - " + username);
+                }
+                break;
+
+            case "files":
+                List<DocumentManager.DocumentInfo> docs = documentManager.getAllDocuments();
+                System.out.println("Dosyalar (" + docs.size() + "):");
+                for (DocumentManager.DocumentInfo doc : docs) {
+                    System.out.println("  - " + doc.getFileName() + " (" + doc.getUserCount() + " kullanıcı)");
+                }
+                break;
+
+            case "announce":
+                if (parts.length > 1) {
+                    String announcement = String.join(" ", Arrays.copyOfRange(parts, 1, parts.length));
+                    broadcastAnnouncement(announcement);
+                } else {
+                    System.out.println("Kullanım: announce <mesaj>");
+                }
+                break;
+
+            case "kick":
+                if (parts.length > 1) {
+                    String username = parts[1];
+                    String reason = parts.length > 2 ?
+                            String.join(" ", Arrays.copyOfRange(parts, 2, parts.length)) : "Admin tarafından çıkarıldı";
+
+                    if (kickUser(username, reason)) {
+                        System.out.println("Kullanıcı çıkarıldı: " + username);
+                    } else {
+                        System.out.println("Kullanıcı bulunamadı: " + username);
+                    }
+                } else {
+                    System.out.println("Kullanım: kick <kullanıcı_adı> [sebep]");
+                }
+                break;
+
+            case "help":
+                System.out.println("Mevcut komutlar:");
+                System.out.println("  stats/status - Server istatistikleri");
+                System.out.println("  users - Aktif kullanıcılar");
+                System.out.println("  files - Dosya listesi");
+                System.out.println("  announce <mesaj> - Duyuru gönder");
+                System.out.println("  kick <kullanıcı> [sebep] - Kullanıcıyı çıkar");
+                System.out.println("  help - Bu yardım");
+                System.out.println("  quit/exit - Server'ı durdur");
+                break;
+
+            case "quit":
+            case "exit":
+                System.out.println("Server durduruluyor...");
+                stop();
+                break;
+
+            default:
+                System.out.println("Bilinmeyen komut: " + cmd + " (help yazın)");
+                break;
+        }
     }
 
     // === SHUTDOWN ===
@@ -365,7 +570,11 @@ public class Server {
                 }
                 connectedClients.clear();
 
-                // DocumentManager'ı kapat
+                // Manager'ları kapat
+                if (userManager != null) {
+                    userManager.clearAllSessions();
+                }
+
                 if (documentManager != null) {
                     documentManager.shutdown();
                 }
@@ -416,10 +625,30 @@ public class Server {
             @Override
             public void run() {
                 if (server.isRunning() && server.getConnectedUserCount() > 0) {
-                    Protocol.log("Aktif kullanıcı: " + server.getConnectedUserCount());
+                    Protocol.log("Aktif kullanıcı: " + server.getConnectedUserCount() +
+                            " | Kayıtlı kullanıcı: " + server.getUserManager().getTotalUserCount());
                 }
             }
         }, 60000, 60000); // Her dakika
+
+        // Console commands için basit scanner
+        Scanner scanner = new Scanner(System.in);
+        Thread consoleThread = new Thread(() -> {
+            System.out.println("Server komutları için 'help' yazın");
+            while (server.isRunning()) {
+                try {
+                    System.out.print("server> ");
+                    String command = scanner.nextLine();
+                    if (command != null) {
+                        server.handleConsoleCommand(command);
+                    }
+                } catch (Exception e) {
+                    // Console hatası - devam et
+                }
+            }
+        });
+        consoleThread.setDaemon(true);
+        consoleThread.start();
 
         try {
             server.start();

@@ -18,7 +18,9 @@ public class Message {
         // Metin düzenleme
         TEXT_INSERT, TEXT_DELETE, TEXT_UPDATE,
         // Diğer
-        SAVE, ERROR
+        SAVE, ERROR,
+
+        REGISTER, REGISTER_ACK, LOGIN, LOGIN_ACK
     }
 
     // Mesaj alanları
@@ -224,6 +226,30 @@ public class Message {
     public static Message createError(String userId, String errorMessage) {
         return new Message(MessageType.ERROR, userId, null)
                 .addData("message", errorMessage);
+    }
+    // Message.java'ya eklenecek factory metotları
+    public static Message createRegister(String username, String password) {
+        return new Message(MessageType.REGISTER, null, null)
+                .addData("username", username)
+                .addData("password", password);
+    }
+
+    public static Message createRegisterAck(boolean success, String message) {
+        return new Message(MessageType.REGISTER_ACK, null, null)
+                .addData("status", success ? "success" : "fail")
+                .addData("message", message);
+    }
+
+    public static Message createLogin(String username, String password) {
+        return new Message(MessageType.LOGIN, null, null)
+                .addData("username", username)
+                .addData("password", password);
+    }
+
+    public static Message createLoginAck(String userId, boolean success, String message) {
+        return new Message(MessageType.LOGIN_ACK, userId, null)
+                .addData("status", success ? "success" : "fail")
+                .addData("message", message);
     }
 
     public static Message createDisconnect(String userId) {

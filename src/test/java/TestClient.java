@@ -1,3 +1,4 @@
+
 import Common.*;
 import java.io.*;
 import java.net.*;
@@ -5,7 +6,7 @@ import java.util.Scanner;
 
 /**
  * MTP Server test etmek için basit console client
- * Yeni Message formatı ve sadeleştirilmiş protokol ile uyumlu
+ * Yeni authentication sistemi (REGISTER/LOGIN) ile uyumlu
  */
 public class TestClient {
 
@@ -13,7 +14,9 @@ public class TestClient {
     private BufferedReader reader;
     private PrintWriter writer;
     private String userId = null;
+    private String username = null;
     private boolean connected = false;
+    private boolean authenticated = false;
 
     public static void main(String[] args) {
         TestClient client = new TestClient();
@@ -23,7 +26,7 @@ public class TestClient {
     public void start() {
         Scanner scanner = new Scanner(System.in);
 
-        System.out.println("=== " + Protocol.PROJECT_NAME + " Test Client ===");
+        System.out.println("=== " + Protocol.PROJECT_NAME + " Test Client v" + Protocol.VERSION + " ===");
         System.out.print("Server IP (default: localhost): ");
         String host = scanner.nextLine().trim();
         if (host.isEmpty()) host = "localhost";
@@ -35,6 +38,7 @@ public class TestClient {
         // Server'a bağlan
         if (connect(host, port)) {
             System.out.println("✅ Server'a bağlanıldı: " + host + ":" + port);
+            System.out.println("💡 Önce 'register' veya 'login' yapmanız gerekiyor");
 
             // Response listener thread başlat
             startResponseListener();
@@ -106,20 +110,42 @@ public class TestClient {
 
             // Özel response handling
             switch (response.getType()) {
-                case CONNECT_ACK:
-                    String status = response.getData("status");
-                    if ("success".equals(status)) {
-                        userId = response.getUserId();
-                        System.out.println("✅ Başarıyla giriş yapıldı! User ID: " + userId);
+                case REGISTER_ACK:
+                    String regStatus = response.getData("status");
+                    String regMessage = response.getData("message");
+                    if ("success".equals(regStatus)) {
+                        System.out.println("✅ Kayıt başarılı! " + regMessage);
+                        System.out.println("💡 Şimdi 'login' yapabilirsiniz");
                     } else {
-                        System.out.println("❌ Giriş başarısız!");
+                        System.out.println("❌ Kayıt başarısız: " + regMessage);
                     }
+                    break;
+
+                case LOGIN_ACK:
+                    String loginStatus = response.getData("status");
+                    String loginMessage = response.getData("message");
+                    if ("success".equals(loginStatus)) {
+                        userId = response.getUserId();
+                        authenticated = true;
+                        System.out.println("✅ Başarıyla giriş yapıldı! User ID: " + userId);
+                        System.out.println("🎉 Hoş geldiniz " + username + "!");
+                        System.out.println("💡 Şimdi dosya işlemleri yapabilirsiniz (list, create, open)");
+                    } else {
+                        System.out.println("❌ Giriş başarısız: " + loginMessage);
+                        authenticated = false;
+                        userId = null;
+                    }
+                    break;
+
+                case CONNECT_ACK:
+                    // Eski sistem için uyumluluk
+                    System.out.println("⚠️  CONNECT komutu artık desteklenmiyor, LOGIN kullanın");
                     break;
 
                 case FILE_LIST_RESP:
                     String files = response.getData("files");
                     System.out.println("📁 Dosya listesi:");
-                    if (files != null && !files.isEmpty()) {
+                    if (files != null && !files.isEmpty() && !files.equals("empty")) {
                         String[] fileEntries = files.split(",");
                         for (String entry : fileEntries) {
                             String[] parts = entry.split(":");
@@ -167,7 +193,16 @@ public class TestClient {
 
                 case ERROR:
                     String errorMsg = response.getData("message");
-                    System.out.println("❌ ERROR: " + errorMsg);
+                    if (errorMsg.startsWith("DUYURU:")) {
+                        System.out.println("📢 " + errorMsg);
+                    } else {
+                        System.out.println("❌ ERROR: " + errorMsg);
+                    }
+                    break;
+
+                case DISCONNECT:
+                    System.out.println("👋 Server bağlantısı kapandı");
+                    connected = false;
                     break;
 
                 default:
@@ -186,9 +221,12 @@ public class TestClient {
         showHelp();
 
         while (connected) {
-            System.out.print("\n[" + (userId != null ? userId : "guest") + "]> ");
-            String input = scanner.nextLine().trim();
+            String prompt = authenticated ?
+                    "[" + username + "@" + userId + "]> " :
+                    "[guest]> ";
+            System.out.print("\n" + prompt);
 
+            String input = scanner.nextLine().trim();
             if (input.isEmpty()) continue;
 
             String[] parts = input.split(" ", 2);
@@ -201,17 +239,31 @@ public class TestClient {
                         showHelp();
                         break;
 
-                    case "connect":
-                    case "c":
-                        if (parts.length < 2) {
-                            System.out.println("Usage: connect <username>");
+                    case "register":
+                    case "reg":
+                        if (authenticated) {
+                            System.out.println("❌ Zaten giriş yapmışsınız!");
                             break;
                         }
-                        sendConnect(parts[1]);
+                        handleRegister(scanner);
+                        break;
+
+                    case "login":
+                    case "l":
+                        if (authenticated) {
+                            System.out.println("❌ Zaten giriş yapmışsınız!");
+                            break;
+                        }
+                        handleLogin(scanner);
+                        break;
+
+                    case "connect":
+                    case "c":
+                        System.out.println("⚠️  CONNECT komutu artık desteklenmiyor");
+                        System.out.println("💡 Bunun yerine 'register' veya 'login' kullanın");
                         break;
 
                     case "list":
-                    case "l":
                         sendFileList();
                         break;
 
@@ -276,6 +328,14 @@ public class TestClient {
                         showStatus();
                         break;
 
+                    case "whoami":
+                        showUserInfo();
+                        break;
+
+                    case "logout":
+                        logout();
+                        break;
+
                     case "quit":
                     case "q":
                         sendDisconnect();
@@ -296,13 +356,26 @@ public class TestClient {
 
     private void showHelp() {
         System.out.println("📋 Kullanılabilir komutlar:");
-        System.out.println("  connect <username>     - Server'a giriş yap");
-        System.out.println("  list                   - Dosya listesini al");
-        System.out.println("  create <filename>      - Yeni dosya oluştur");
-        System.out.println("  open <fileId>          - Dosya aç");
-        System.out.println("  insert <fileId> <pos> <text> - Metne ekleme yap");
-        System.out.println("  delete <fileId> <pos> <len>  - Metinden silme yap");
-        System.out.println("  save <fileId>          - Dosyayı kaydet");
+
+        if (!authenticated) {
+            System.out.println("🔐 Authentication:");
+            System.out.println("  register               - Yeni kullanıcı kaydı");
+            System.out.println("  login                  - Kullanıcı girişi");
+        } else {
+            System.out.println("📁 Dosya İşlemleri:");
+            System.out.println("  list                   - Dosya listesini al");
+            System.out.println("  create <filename>      - Yeni dosya oluştur");
+            System.out.println("  open <fileId>          - Dosya aç");
+            System.out.println("  save <fileId>          - Dosyayı kaydet");
+            System.out.println("✏️  Metin İşlemleri:");
+            System.out.println("  insert <fileId> <pos> <text> - Metne ekleme yap");
+            System.out.println("  delete <fileId> <pos> <len>  - Metinden silme yap");
+            System.out.println("👤 Kullanıcı:");
+            System.out.println("  whoami                 - Kullanıcı bilgileri");
+            System.out.println("  logout                 - Çıkış yap");
+        }
+
+        System.out.println("🔧 Diğer:");
         System.out.println("  test                   - Multi-user test");
         System.out.println("  status                 - Bağlantı durumu");
         System.out.println("  raw <message>          - Ham mesaj gönder");
@@ -310,15 +383,72 @@ public class TestClient {
         System.out.println("  quit                   - Çıkış");
     }
 
-    private void sendConnect(String username) {
+    private void handleRegister(Scanner scanner) {
+        System.out.print("Kullanıcı adı (3-30 karakter, harf/rakam/_/-): ");
+        String username = scanner.nextLine().trim();
+
         if (!Protocol.isValidUsername(username)) {
-            System.out.println("❌ Geçersiz kullanıcı adı! (3-30 karakter, harf/rakam/_ -)");
+            System.out.println("❌ Geçersiz kullanıcı adı formatı!");
             return;
         }
 
-        Message msg = Message.createConnect(username);
+        System.out.print("Şifre (en az 3 karakter): ");
+        String password = scanner.nextLine().trim();
+
+        if (password.length() < 3) {
+            System.out.println("❌ Şifre en az 3 karakter olmalı!");
+            return;
+        }
+
+        Message msg = Message.createRegister(username, password);
         sendMessage(msg);
-        System.out.println("📤 Connect mesajı gönderildi: " + username);
+        System.out.println("📤 Kayıt mesajı gönderildi: " + username);
+    }
+
+    private void handleLogin(Scanner scanner) {
+        System.out.print("Kullanıcı adı: ");
+        String inputUsername = scanner.nextLine().trim();
+
+        System.out.print("Şifre: ");
+        String password = scanner.nextLine().trim();
+
+        if (inputUsername.isEmpty() || password.isEmpty()) {
+            System.out.println("❌ Kullanıcı adı ve şifre boş olamaz!");
+            return;
+        }
+
+        this.username = inputUsername; // Başarılı girişte kullanılacak
+        Message msg = Message.createLogin(inputUsername, password);
+        sendMessage(msg);
+        System.out.println("📤 Giriş mesajı gönderildi: " + inputUsername);
+    }
+
+    private void logout() {
+        if (!authenticated) {
+            System.out.println("❌ Zaten giriş yapmamışsınız!");
+            return;
+        }
+
+        sendDisconnect();
+
+        // Local state temizle
+        userId = null;
+        username = null;
+        authenticated = false;
+
+        System.out.println("👋 Çıkış yapıldı. Yeniden giriş yapmak için 'login' kullanın.");
+    }
+
+    private void showUserInfo() {
+        if (!authenticated) {
+            System.out.println("❌ Giriş yapmamışsınız!");
+            return;
+        }
+
+        System.out.println("👤 Kullanıcı Bilgileri:");
+        System.out.println("   Username: " + username);
+        System.out.println("   User ID: " + userId);
+        System.out.println("   Authenticated: " + authenticated);
     }
 
     private void sendFileList() {
@@ -413,16 +543,20 @@ public class TestClient {
     }
 
     private void testMultiUser() {
-        System.out.println("🧪 Multi-user test başlatılıyor...");
-        System.out.println("   1. Başka terminal açın: java TestClient");
-        System.out.println("   2. Aynı dosyayı açın");
-        System.out.println("   3. Aynı anda yazı yazın");
-        System.out.println("   4. Operational Transform'u gözlemleyin!");
+        System.out.println("🧪 Multi-user test rehberi:");
+        System.out.println("   1. Başka terminal açın: java client.TestClient");
+        System.out.println("   2. Farklı kullanıcılarla giriş yapın");
+        System.out.println("   3. Aynı dosyayı açın (open <fileId>)");
+        System.out.println("   4. Aynı anda yazı yazın (insert komutları)");
+        System.out.println("   5. Operational Transform'u gözlemleyin!");
+        System.out.println("   6. Real-time collaboration'ı test edin!");
     }
 
     private void showStatus() {
         System.out.println("🔗 Bağlantı Durumu:");
         System.out.println("   Connected: " + connected);
+        System.out.println("   Authenticated: " + authenticated);
+        System.out.println("   Username: " + (username != null ? username : "null"));
         System.out.println("   User ID: " + (userId != null ? userId : "null"));
         System.out.println("   Socket: " + (socket != null && !socket.isClosed() ? "Open" : "Closed"));
     }
@@ -449,8 +583,8 @@ public class TestClient {
     }
 
     private boolean checkAuthenticated() {
-        if (userId == null) {
-            System.out.println("❌ Önce giriş yapmalısınız! (connect <username>)");
+        if (!authenticated || userId == null) {
+            System.out.println("❌ Önce giriş yapmalısınız! ('login' komutu)");
             return false;
         }
         return true;
@@ -458,6 +592,7 @@ public class TestClient {
 
     private void disconnect() {
         connected = false;
+        authenticated = false;
 
         try {
             if (socket != null && !socket.isClosed()) {
