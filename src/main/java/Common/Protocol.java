@@ -93,14 +93,6 @@ public final class Protocol {
             return false;
         }
 
-        // Yasak karakterleri kontrol et
-        String[] invalidChars = {"<", ">", ":", "\"", "|", "?", "*", "/", "\\"};
-        for (String invalidChar : invalidChars) {
-            if (trimmed.contains(invalidChar)) {
-                return false;
-            }
-        }
-
         return true;
     }
 

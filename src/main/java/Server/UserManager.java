@@ -218,24 +218,20 @@ public class UserManager {
      * Format: username:password:registrationTime:lastLoginTime
      */
     private void saveUsers() {
-        try {
-            StringBuilder content = new StringBuilder();
-            content.append("# MTP User Database\n");
-            content.append("# Format: username:password:registrationTime:lastLoginTime\n");
-            content.append("# Auto-generated file\n\n");
+        StringBuilder content = new StringBuilder();
+        content.append("# MTP User Database\n");
+        content.append("# Format: username:password:registrationTime:lastLoginTime\n");
+        content.append("# Auto-generated file\n\n");
 
-            for (User user : users.values()) {
-                content.append(user.username).append(":")
-                        .append(user.password).append(":")
-                        .append(user.registrationTime).append(":")
-                        .append(user.lastLoginTime).append("\n");
-            }
-
-            Utils.writeFileContent(USERS_FILE, content.toString());
-
-        } catch (IOException e) {
-            Protocol.logError("Kullanıcı kaydetme hatası", e);
+        for (User user : users.values()) {
+            content.append(user.username).append(":")
+                    .append(user.password).append(":")
+                    .append(user.registrationTime).append(":")
+                    .append(user.lastLoginTime).append("\n");
         }
+
+        Utils.writeFileContent(USERS_FILE, content.toString());
+
     }
 
     /**

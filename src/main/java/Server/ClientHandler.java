@@ -259,20 +259,29 @@ public class ClientHandler implements Runnable {
             List<DocumentManager.DocumentInfo> files =
                     server.getDocumentManager().getAllDocuments();
 
-            // Basit format'ta dosya listesi
+            Protocol.log("DEBUG: handleFileList - Bulunan dosya sayısı: " + files.size());
+
+            // GÜVENLI FORMAT: Pipe (|) separator kullan
             StringBuilder fileListData = new StringBuilder();
 
             for (int i = 0; i < files.size(); i++) {
                 DocumentManager.DocumentInfo file = files.get(i);
-                if (i > 0) fileListData.append(",");
+                if (i > 0) fileListData.append("|");  // Virgül yerine pipe
 
-                fileListData.append(file.getFileId()).append(":").append(file.getFileName())
-                        .append(":").append(file.getUserCount());
+                String fileEntry = file.getFileId() + ":" + file.getFileName() + ":" + file.getUserCount();
+                fileListData.append(fileEntry);
+
+                Protocol.log("DEBUG: Dosya " + (i+1) + "/" + files.size() + ": " + fileEntry);
             }
 
+            String finalData = fileListData.toString();
+            Protocol.log("DEBUG: Gönderilecek files data (pipe format): '" + finalData + "'");
+
             Message response = new Message(Message.MessageType.FILE_LIST_RESP, userId, null)
-                    .addData("files", fileListData.toString());
+                    .addData("files", finalData);
             sendMessage(response);
+
+            Protocol.log("DEBUG: FILE_LIST_RESP gönderildi - user: " + getUserId());
 
         } catch (Exception e) {
             Protocol.logError("Dosya listesi oluşturma hatası: " + getUserId(), e);
@@ -287,7 +296,9 @@ public class ClientHandler implements Runnable {
         if (!checkAuthenticated()) return;
 
         String fileName = message.getData("name");
-
+        Protocol.log("Gelen dosya adı: '" + fileName + "'");
+        Protocol.log("Dosya adı byte'ları: " + Arrays.toString(fileName.getBytes()));
+        Protocol.log("Validation sonucu: " + Protocol.isValidFilename(fileName));
         if (!Protocol.isValidFilename(fileName)) {
             sendError("Geçersiz dosya ismi");
             return;
@@ -318,43 +329,75 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     * FILE_OPEN mesajını işle
+     * FILE_OPEN mesajını işle - client hatası için düzeltilmiş versiyon
      */
     private void handleFileOpen(Message message) {
         if (!checkAuthenticated()) return;
 
         String fileId = message.getFileId();
+        Protocol.log("DEBUG: handleFileOpen - gelen fileId: '" + fileId + "'");
 
-        if (fileId == null) {
-            sendError("Dosya ID gerekli");
+        if (fileId == null || fileId.trim().isEmpty()) {
+            Protocol.log("ERROR: handleFileOpen - fileId null veya boş");
+            sendError("Dosya ID geçersiz");
             return;
         }
 
         try {
-            DocumentManager.Document doc =
-                    server.getDocumentManager().openDocument(fileId, userId);
+            // Client hatalı olarak "fileId:fileName:userCount" formatında gönderiyor
+            // Sadece fileId kısmını al
+            String actualFileId = fileId;
+            if (fileId.contains(":")) {
+                String[] parts = fileId.split(":");
+                if (parts.length >= 1) {
+                    actualFileId = parts[0].trim();
+                    Protocol.log("DEBUG: Client hatası düzeltildi. Gerçek fileId: '" + actualFileId + "'");
+                }
+            }
+
+            // FileId'yi temizle - Windows path sorunlarını önle
+            String cleanFileId = Utils.sanitizeFileName(actualFileId.trim());
+            if (cleanFileId == null || cleanFileId.isEmpty()) {
+                Protocol.log("ERROR: sanitizeFileName başarısız - input: '" + actualFileId + "'");
+                sendError("Geçersiz dosya ID: " + fileId);
+                return;
+            }
+
+            Protocol.log("DEBUG: İşlenecek dosya ID: '" + cleanFileId + "'");
+
+            // DocumentManager'dan openDocument çağır
+            Protocol.log("DEBUG: DocumentManager.openDocument çağrılıyor...");
+            DocumentManager.Document doc = server.getDocumentManager().openDocument(cleanFileId, userId);
 
             if (doc != null) {
+                Protocol.log("DEBUG: Dosya başarıyla yüklendi: " + doc.getFileName());
+                Protocol.log("DEBUG: İçerik uzunluğu: " + doc.getContent().length());
+
                 // Dosyayı açık listesine ekle
-                openFiles.add(fileId);
+                openFiles.add(cleanFileId);
+                Protocol.log("DEBUG: Dosya açık listesine eklendi");
 
                 // Dosya içeriğini gönder
-                List<String> currentUsers = server.getDocumentManager().getFileUsers(fileId);
+                List<String> currentUsers = server.getDocumentManager().getFileUsers(cleanFileId);
                 String usersData = String.join(",", currentUsers);
 
-                Message response = Message.createFileContent(userId, fileId, doc.getContent())
-                        .addData("users", usersData);
-                sendMessage(response);
+                Message response = Message.createFileContent(userId, cleanFileId, doc.getContent())
+                        .addData("users", usersData)
+                        .addData("filename", doc.getFileName());
 
-                Protocol.log("Dosya açıldı: " + fileId + " by " + getUserId());
+                sendMessage(response);
+                Protocol.log("DEBUG: FILE_CONTENT response gönderildi");
+
+                Protocol.log("SUCCESS: Dosya başarıyla açıldı: " + doc.getFileName() + " by " + getUserId());
 
             } else {
-                sendError("Dosya bulunamadı");
+                Protocol.log("ERROR: DocumentManager.openDocument null döndü");
+                sendError("Dosya bulunamadı veya açılamadı: " + actualFileId);
             }
 
         } catch (Exception e) {
-            Protocol.logError("Dosya açma hatası: " + getUserId(), e);
-            sendError("Dosya açma hatası");
+            Protocol.logError("ERROR: Dosya açma exception: " + getUserId(), e);
+            sendError("Dosya açma hatası: " + e.getMessage());
         }
     }
 

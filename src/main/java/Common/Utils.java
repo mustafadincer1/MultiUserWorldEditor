@@ -2,6 +2,7 @@ package Common;
 
 import java.io.*;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 
 /**
@@ -57,50 +58,112 @@ public final class Utils {
 
     // === FILE UTILITIES ===
 
+    public static String sanitizeFileName(String fileName) {
+        if (fileName == null || fileName.trim().isEmpty()) {
+            return null;
+        }
+
+        // Boşlukları temizle
+        String cleaned = fileName.trim();
+
+        // Tehlikeli karakterleri kaldır
+        cleaned = cleaned.replaceAll("[<>:\"|?*\\\\]", "");
+
+        // Path separator'ları kaldır
+        cleaned = cleaned.replaceAll("[/\\\\]", "");
+
+        // Boş string kontrolü
+        if (cleaned.isEmpty()) {
+            return null;
+        }
+
+        return cleaned;
+    }
+
     /**
      * Dosyanın var olup olmadığını kontrol eder
      */
     public static boolean fileExists(String filePath) {
-        return Files.exists(Paths.get(filePath));
+        try {
+            File file = new File(filePath);
+            boolean exists = file.exists();
+            boolean canRead = file.canRead();
+            boolean isFile = file.isFile();
+            long length = file.length();
+
+            System.out.println("DEBUG: Utils.fileExists() - path: " + filePath);
+            System.out.println("DEBUG: file.exists(): " + exists);
+            System.out.println("DEBUG: file.canRead(): " + canRead);
+            System.out.println("DEBUG: file.isFile(): " + isFile);
+            System.out.println("DEBUG: file.length(): " + length);
+
+            return exists && isFile && canRead;
+
+        } catch (Exception e) {
+            System.out.println("DEBUG: Utils.fileExists() exception: " + e.getMessage());
+            return false;
+        }
     }
 
     /**
      * Dosya içeriğini okur
      */
-    public static String readFileContent(String filePath) throws IOException {
-        Path path = Paths.get(filePath);
+    public static String readFileContent(String filePath) {
+        try {
+            System.out.println("DEBUG: Utils.readFileContent() - path: " + filePath);
 
-        if (!Files.exists(path)) {
-            throw new FileNotFoundException("Dosya bulunamadı: " + filePath);
+            File file = new File(filePath);
+            if (!file.exists()) {
+                System.out.println("DEBUG: File does not exist");
+                return null;
+            }
+
+            if (!file.canRead()) {
+                System.out.println("DEBUG: File cannot be read");
+                return null;
+            }
+
+            System.out.println("DEBUG: File size: " + file.length() + " bytes");
+
+            // Java 11+ versiyonu
+            String content = Files.readString(Paths.get(filePath), StandardCharsets.UTF_8);
+            System.out.println("DEBUG: Content read successfully: " + content.length() + " characters");
+
+            return content;
+
+        } catch (Exception e) {
+            System.out.println("DEBUG: Utils.readFileContent() exception: " + e.getMessage());
+            e.printStackTrace();
+            return null;
         }
-
-        // Dosya boyutu kontrolü
-        if (Files.size(path) > Protocol.MAX_FILE_SIZE) {
-            throw new IOException("Dosya boyutu çok büyük: " + Files.size(path));
-        }
-
-        return new String(Files.readAllBytes(path), "UTF-8");
     }
 
     /**
      * Dosya içeriğini yazar
      */
-    public static void writeFileContent(String filePath, String content) throws IOException {
-        if (content == null) {
-            content = "";
+    public static boolean writeFileContent(String filePath, String content) {
+        try {
+            System.out.println("DEBUG: Utils.writeFileContent() - path: " + filePath);
+            System.out.println("DEBUG: Content length: " + (content != null ? content.length() : "null"));
+
+            Path path = Paths.get(filePath);
+
+            // Klasörü oluştur
+            if (path.getParent() != null) {
+                Files.createDirectories(path.getParent());
+            }
+
+            // Dosyayı yaz
+            Files.write(path, content.getBytes(StandardCharsets.UTF_8));
+
+            System.out.println("DEBUG: File written successfully");
+            return true;
+
+        } catch (Exception e) {
+            System.out.println("DEBUG: Utils.writeFileContent() exception: " + e.getMessage());
+            e.printStackTrace();
+            return false;
         }
-
-        Path path = Paths.get(filePath);
-
-        // Klasör yoksa oluştur
-        if (path.getParent() != null) {
-            Files.createDirectories(path.getParent());
-        }
-
-        Files.write(path, content.getBytes("UTF-8"),
-                StandardOpenOption.CREATE,
-                StandardOpenOption.WRITE,
-                StandardOpenOption.TRUNCATE_EXISTING);
     }
 
     // === LOGGING UTILITIES ===
