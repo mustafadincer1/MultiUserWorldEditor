@@ -6,6 +6,8 @@ import java.net.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static Common.Utils.writeToSocket;
+
 /**
  * İstemci bağlantısını handle eden sınıf
  * Robust OT entegreli DocumentManager ve UserManager ile çalışır
@@ -106,60 +108,150 @@ public class ClientHandler implements Runnable {
      */
     private void processMessage(String rawMessage) {
         try {
-            Message message = Message.deserialize(rawMessage);
-            Protocol.log("Mesaj alındı: " + message.getType() + " from " + getUserId());
+            System.out.println("🔧 RAW MESSAGE: '" + rawMessage + "'");
 
-            // Mesaj tipine göre işle
+            // 🔧 ENHANCED NEWLINE-AWARE MESSAGE PREPROCESSING
+            if (rawMessage != null && rawMessage.contains("\n")) {
+                long newlineCount = rawMessage.chars().filter(ch -> ch == '\n').count();
+                boolean endsWithNewline = rawMessage.endsWith("\n");
+
+                System.out.println("⚠️ MESSAGE CONTAINS " + newlineCount + " NEWLINES, ends with newline: " + endsWithNewline);
+
+                // 🔧 SPECIAL HANDLING FOR __NEWLINE__ ENCODED MESSAGES
+                if (rawMessage.contains("__NEWLINE__")) {
+                    System.out.println("🔧 SPECIAL: __NEWLINE__ encoded message detected");
+
+                    // Ensure proper message termination for __NEWLINE__ messages
+                    if (!endsWithNewline) {
+                        rawMessage += "\n";
+                        System.out.println("🔧 FIXED: Added missing message terminator");
+                    }
+
+                    // Remove any embedded newlines that aren't the message terminator
+                    String[] lines = rawMessage.split("\n");
+                    if (lines.length > 2) { // More than expected (message + empty terminator)
+                        System.out.println("🔧 FIXING: Multiple newlines detected, fixing...");
+                        StringBuilder fixed = new StringBuilder();
+                        for (int i = 0; i < lines.length - 1; i++) {
+                            if (i > 0) fixed.append("\\n"); // Escape internal newlines
+                            fixed.append(lines[i]);
+                        }
+                        fixed.append("\n"); // Add proper terminator
+                        rawMessage = fixed.toString();
+                        System.out.println("🔧 FIXED MESSAGE: '" + rawMessage + "'");
+                    }
+                }
+            }
+
+            // 🔧 ENHANCED MESSAGE VALIDATION
+            if (rawMessage == null || rawMessage.trim().isEmpty()) {
+                System.err.println("ERROR: Empty message received");
+                return;
+            }
+
+            // Clean message (remove trailing newlines for parsing)
+            String cleanMessage = rawMessage.trim();
+            if (cleanMessage.endsWith("\n")) {
+                cleanMessage = cleanMessage.substring(0, cleanMessage.length() - 1);
+            }
+
+            // 🔧 ENHANCED PIPE COUNT VALIDATION
+            String[] preliminaryParts = cleanMessage.split("\\|");
+            System.out.println("DEBUG: Message parts count: " + preliminaryParts.length);
+
+            if (preliminaryParts.length < 5) {
+                System.err.println("ERROR: Invalid message format - expected 5 parts, got " +
+                        preliminaryParts.length + " in: '" + cleanMessage + "'");
+
+                // 🔧 SPECIAL DEBUGGING FOR __NEWLINE__ MESSAGES
+                if (cleanMessage.contains("__NEWLINE__")) {
+                    System.err.println("SPECIAL DEBUG: __NEWLINE__ message parsing failed");
+                    System.err.println("DEBUG: Raw message bytes: " + java.util.Arrays.toString(rawMessage.getBytes()));
+
+                    // Try to reconstruct the message
+                    if (preliminaryParts.length == 4) {
+                        // Missing timestamp - add current timestamp
+                        cleanMessage = cleanMessage + "|" + System.currentTimeMillis();
+                        System.err.println("DEBUG: Reconstructed message: '" + cleanMessage + "'");
+
+                        // Retry parsing
+                        preliminaryParts = cleanMessage.split("\\|");
+                        if (preliminaryParts.length == 5) {
+                            System.out.println("SUCCESS: Message reconstructed successfully");
+                        }
+                    }
+                }
+
+                if (preliminaryParts.length < 5) {
+                    // Still invalid - send error
+                    Message errorMsg = Message.createError(userId, "Geçersiz mesaj formatı: " + preliminaryParts.length + " parça");
+                    sendMessage(errorMsg);
+                    return;
+                }
+            }
+
+            // Parse with enhanced error handling
+            Message message = Message.deserialize(cleanMessage);
+            if (message == null) {
+                System.err.println("ERROR: Message deserialization failed for: '" + cleanMessage + "'");
+                Message errorMsg = Message.createError(userId, "Mesaj parse hatası");
+                sendMessage(errorMsg);
+                return;
+            }
+
+            // 🔧 SPECIAL DEBUG FOR __NEWLINE__ MESSAGES
+            if (message.getType() == Message.MessageType.TEXT_INSERT) {
+                String textData = message.getData("text");
+                if ("__NEWLINE__".equals(textData)) {
+                    System.out.println("🎉 SUCCESS: __NEWLINE__ message parsed successfully!");
+                    System.out.println("DEBUG: Message data: " + message.getAllData());
+                }
+            }
+
+            // Message type specific processing
             switch (message.getType()) {
-                case REGISTER:
-                    handleRegister(message);
-                    break;
-
-                case LOGIN:
-                    handleLogin(message);
-                    break;
-
-                case CONNECT:
-                    // Eski sistem - artık desteklenmiyor
-                    sendError("CONNECT komutu desteklenmiyor, LOGIN kullanın");
-                    break;
-
-                case DISCONNECT:
-                    handleDisconnect(message);
-                    break;
-
-                case FILE_LIST:
-                    handleFileList(message);
-                    break;
-
-                case FILE_CREATE:
-                    handleFileCreate(message);
-                    break;
-
-                case FILE_OPEN:
-                    handleFileOpen(message);
-                    break;
-
                 case TEXT_INSERT:
                     handleTextInsert(message);
                     break;
-
                 case TEXT_DELETE:
                     handleTextDelete(message);
                     break;
-
+                case REGISTER:
+                    handleRegister(message);
+                    break;
+                case LOGIN:
+                    handleLogin(message);
+                    break;
+                case DISCONNECT:
+                    handleDisconnect(message);
+                    break;
+                case FILE_LIST:
+                    handleFileList(message);
+                    break;
+                case FILE_CREATE:
+                    handleFileCreate(message);
+                    break;
+                case FILE_OPEN:
+                    handleFileOpen(message);
+                    break;
                 case SAVE:
                     handleSave(message);
                     break;
-
                 default:
                     sendError("Desteklenmeyen mesaj tipi: " + message.getType());
                     break;
             }
 
         } catch (Exception e) {
-            Protocol.logError("Mesaj parse hatası: " + getUserId(), e);
-            sendError("Geçersiz mesaj formatı");
+            System.err.println("ERROR: processMessage exception: " + e.getMessage());
+            e.printStackTrace();
+
+            try {
+                Message errorMsg = Message.createError(userId, "Sunucu mesaj işleme hatası: " + e.getMessage());
+                sendMessage(errorMsg);
+            } catch (Exception ex) {
+                System.err.println("ERROR: Could not send error message: " + ex.getMessage());
+            }
         }
     }
 
@@ -455,7 +547,7 @@ public class ClientHandler implements Runnable {
 
             System.out.println("DEBUG: Final decoded text: '" + text + "' (length: " +
                     (text != null ? text.length() : "null") + ")");
-            System.out.println("DEBUG: Position: " + position);
+            System.out.println("DEBUG: Original position from client: " + position);
 
             // Validation
             if (position == null || text == null) {
@@ -465,12 +557,12 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            // DocumentManager'da insert - BAŞARIYI LOGLA
-            boolean success = server.getDocumentManager()
-                    .insertText(fileId, position, text, userId);
+            // 🔧 USE NEW insertTextWithResult METHOD
+            DocumentManager.InsertResult result = server.getDocumentManager()
+                    .insertTextWithResult(fileId, position, text, userId);
 
-            if (success) {
-                // Broadcast encoding
+            if (result.success) {
+                // 🔧 BROADCAST WITH ACTUAL APPLIED POSITION (NOT ORIGINAL)
                 String broadcastText;
                 if (text.equals(" ")) {
                     broadcastText = "__SPACE__";
@@ -485,23 +577,27 @@ public class ClientHandler implements Runnable {
                     broadcastText = text;
                 }
 
-                // Broadcast message
-                Message updateMsg = Message.createTextUpdate(userId, fileId, "insert", position, broadcastText);
+                // ✅ USE RESULT.APPLIEDPOSITION INSTEAD OF ORIGINAL POSITION
+                Message updateMsg = Message.createTextUpdate(userId, fileId, "insert",
+                        result.appliedPosition, broadcastText);
                 server.broadcastToFile(fileId, updateMsg, userId);
 
-                // Success log
+                // Success log with both positions
                 if (text.equals("\n")) {
                     System.out.println("🎉 SERVER SUCCESS: NEWLINE CHARACTER INSERTED! 🎉");
-                    System.out.println("Text insert: " + fileId + " pos:" + position + " NEWLINE by " + getUserId());
+                    System.out.println("Text insert: " + fileId + " CLIENT pos:" + position +
+                            " → SERVER pos:" + result.appliedPosition + " NEWLINE by " + getUserId());
                 } else if (text.equals(" ")) {
                     System.out.println("🎉 SERVER SUCCESS: SPACE CHARACTER INSERTED! 🎉");
-                    System.out.println("Text insert: " + fileId + " pos:" + position + " SPACE by " + getUserId());
+                    System.out.println("Text insert: " + fileId + " CLIENT pos:" + position +
+                            " → SERVER pos:" + result.appliedPosition + " SPACE by " + getUserId());
                 } else {
-                    System.out.println("Text insert: " + fileId + " pos:" + position + " text:'" + text + "' by " + getUserId());
+                    System.out.println("Text insert: " + fileId + " CLIENT pos:" + position +
+                            " → SERVER pos:" + result.appliedPosition + " text:'" + text + "' by " + getUserId());
                 }
 
             } else {
-                System.out.println("ERROR: DocumentManager.insertText failed");
+                System.out.println("ERROR: DocumentManager.insertTextWithResult failed");
                 sendError("Metin eklenemedi");
             }
 
@@ -609,7 +705,7 @@ public class ClientHandler implements Runnable {
                 }
             }
 
-            Utils.writeToSocket(clientSocket, serialized);
+            writeToSocket(clientSocket, serialized);
             messagesSent++;
 
             Protocol.log("DEBUG: Message sent successfully: " + message.getType() + " to " + getUserId());

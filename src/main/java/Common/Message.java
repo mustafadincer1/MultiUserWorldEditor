@@ -56,6 +56,9 @@ public class Message {
         }
         return this;
     }
+    public Map<String, String> getAllData() {
+        return data != null ? new HashMap<>(data) : new HashMap<>();
+    }
 
     public Message addData(String key, int value) {
         return addData(key, String.valueOf(value));

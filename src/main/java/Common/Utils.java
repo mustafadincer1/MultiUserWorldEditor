@@ -36,38 +36,32 @@ public final class Utils {
      * Socket'e güvenli şekilde mesaj yazar
      */
     public static void writeToSocket(Socket socket, String message) throws IOException {
-        if (socket == null || socket.isClosed()) {
-            throw new IOException("Socket kapalı veya null");
+        try {
+            PrintWriter writer = new PrintWriter(
+                    new OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true);
+
+            // 🔧 NEWLINE DEBUG
+            if (message.contains("\n")) {
+                long newlineCount = message.chars().filter(ch -> ch == '\n').count();
+                System.out.println("DEBUG: writeToSocket - Sending message with newlines:");
+                System.out.println("DEBUG: Message length: " + message.length());
+                System.out.println("DEBUG: Newline count: " + newlineCount);
+                System.out.println("DEBUG: Message preview: '" +
+                        (message.length() > 100 ? message.substring(0, 100) + "..." : message) + "'");
+            }
+
+            writer.print(message);
+            writer.flush();
+
+            if (message.contains("\n")) {
+                System.out.println("DEBUG: writeToSocket - Message sent successfully to " +
+                        socket.getRemoteSocketAddress());
+            }
+
+        } catch (IOException e) {
+            System.err.println("ERROR: writeToSocket failed: " + e.getMessage());
+            throw e;
         }
-
-        if (message == null) {
-            throw new IllegalArgumentException("Mesaj null olamaz");
-        }
-
-        PrintWriter writer = new PrintWriter(
-                new OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true);
-
-        // 🔧 DEBUG: Newline içeren mesajları logla
-        if (message.contains("\n")) {
-            System.out.println("DEBUG: writeToSocket - Sending message with newlines:");
-            System.out.println("DEBUG: Message length: " + message.length());
-            System.out.println("DEBUG: Newline count: " + (message.length() - message.replace("\n", "").length()));
-
-            // İlk 200 karakteri göster (çok uzunsa)
-            String preview = message.length() > 200 ? message.substring(0, 200) + "..." : message;
-            System.out.println("DEBUG: Message preview: '" + preview.replace("\n", "\\n").replace("\r", "\\r") + "'");
-        }
-
-        // Mesajın sonunda \n yoksa ekle
-        if (!message.endsWith("\n")) {
-            message += "\n";
-        }
-
-        writer.print(message);
-        writer.flush();
-
-        // 🔧 SUCCESS DEBUG
-        System.out.println("DEBUG: writeToSocket - Message sent successfully to " + socket.getRemoteSocketAddress());
     }
 
     // === FILE UTILITIES ===

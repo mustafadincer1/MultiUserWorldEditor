@@ -37,10 +37,146 @@ public class DocumentManager {
 
         Protocol.log("DocumentManager başlatıldı (Robust OT ile)");
     }
+    public static class InsertResult {
+        public final boolean success;
+        public final int appliedPosition;
+        public final String appliedText;
 
-    /**
-     * Documents klasörünü oluştur
-     */
+        public InsertResult(boolean success, int appliedPosition, String appliedText) {
+            this.success = success;
+            this.appliedPosition = appliedPosition;
+            this.appliedText = appliedText;
+        }
+    }
+
+    public synchronized InsertResult insertTextWithResult(String fileId, int position, String text, String userId) {
+        Protocol.log("=== ENHANCED INSERT TEXT WITH RESULT DEBUG ===");
+        Protocol.log("DEBUG: insertTextWithResult - fileId: " + fileId + ", original position: " + position +
+                ", text: '" + text.replace("\n", "\\n") + "', userId: " + userId);
+
+        Document doc = documents.get(fileId);
+        if (doc == null || text == null || text.length() == 0) {
+            Protocol.log("ERROR: Invalid parameters");
+            return new InsertResult(false, position, text != null ? text : "");
+        }
+
+        String currentContent = doc.getContent();
+        int originalPosition = position;
+
+        Protocol.log("DEBUG: Current content length: " + currentContent.length());
+        Protocol.log("DEBUG: Original position: " + originalPosition);
+
+        // 🔧 STRICT POSITION CLAMPING
+        int clampedPosition = Math.max(0, Math.min(position, currentContent.length()));
+        Protocol.log("DEBUG: Clamped position: " + clampedPosition);
+
+        // 🔧 SPECIAL LOGGING FOR NEWLINE
+        if (text.equals("\n")) {
+            Protocol.log("🔥 NEWLINE INSERT DETECTED - original pos: " + originalPosition +
+                    ", clamped pos: " + clampedPosition);
+        }
+
+        // Yeni operasyon oluştur
+        OperationalTransform.Operation newOp = OperationalTransform.createInsert(clampedPosition, text, userId);
+        Protocol.log("DEBUG: Created operation: " + newOp);
+
+        // 🔧 SIGNIFICANTLY REDUCED TRANSFORM SCOPE for INSERT operations
+        int maxHistoricalOps = text.equals("\n") ? 2 : 3; // Even fewer for NEWLINE
+        List<OperationalTransform.Operation> recentOps = doc.getRecentOperations(maxHistoricalOps);
+        Protocol.log("DEBUG: Recent operations count: " + recentOps.size() + " (max: " + maxHistoricalOps + ")");
+
+        List<OperationalTransform.Operation> transformedOps =
+                OperationalTransform.transformOperationList(newOp, recentOps);
+        Protocol.log("DEBUG: Transformed operations count: " + transformedOps.size());
+
+        // Transform edilmiş operasyonları uygula
+        boolean success = false;
+        int appliedPosition = clampedPosition;
+
+        for (OperationalTransform.Operation transformedOp : transformedOps) {
+            Protocol.log("DEBUG: Checking transformed op: " + transformedOp);
+
+            // 🔧 ENHANCED CONTENT-AWARE VALIDATION with aggressive position fixing
+            String currentState = doc.getContent();
+            int currentStateLength = currentState.length();
+
+            Protocol.log("DEBUG: Content state - length: " + currentStateLength +
+                    ", op position: " + transformedOp.position);
+
+            // 🔧 AGGRESSIVE AUTO-FIX FOR OUT-OF-BOUNDS OPERATIONS
+            OperationalTransform.Operation finalOp = transformedOp;
+
+            if (transformedOp.position > currentStateLength) {
+                // Position beyond content - clamp to end
+                int newPos = currentStateLength;
+                // 🔧 FIXED: Use correct INSERT constructor (Type, position, content, userId)
+                finalOp = new OperationalTransform.Operation(OperationalTransform.Operation.Type.INSERT,
+                        newPos, transformedOp.content, transformedOp.userId);
+                Protocol.log("DEBUG: Position auto-fixed: " + transformedOp.position + " → " + newPos);
+
+            } else if (transformedOp.position < 0) {
+                // Negative position - clamp to start
+                // 🔧 FIXED: Use correct INSERT constructor (Type, position, content, userId)
+                finalOp = new OperationalTransform.Operation(OperationalTransform.Operation.Type.INSERT,
+                        0, transformedOp.content, transformedOp.userId);
+                Protocol.log("DEBUG: Negative position fixed: " + transformedOp.position + " → 0");
+            }
+
+            // Final validation
+            boolean isValid = OperationalTransform.isValidOperation(finalOp, currentState);
+            Protocol.log("DEBUG: isValidOperation: " + isValid + " (content length: " + currentStateLength + ")");
+
+            if (isValid) {
+                String oldContent = doc.getContent();
+                String newContent = OperationalTransform.applyOperation(oldContent, finalOp);
+                doc.setContent(newContent);
+                doc.addOperation(finalOp);
+                success = true;
+                appliedPosition = finalOp.position;
+
+                Protocol.log(String.format("SUCCESS: Insert applied - %s original pos:%d → clamped pos:%d → applied pos:%d text:'%s'",
+                        fileId, originalPosition, clampedPosition, appliedPosition,
+                        text.replace("\n", "\\n")));
+                Protocol.log("DEBUG: Content changed from length " + oldContent.length() +
+                        " to " + newContent.length());
+
+                // 🔧 SPECIAL SUCCESS LOGGING FOR NEWLINE
+                if (text.equals("\n")) {
+                    Protocol.log("🎉 SERVER SUCCESS: NEWLINE CHARACTER INSERTED! 🎉");
+                    Protocol.log("NEWLINE: " + fileId + " original pos:" + originalPosition +
+                            " → applied pos:" + appliedPosition + " by " + userId);
+                }
+
+            } else {
+                Protocol.log("WARNING: Operation failed validation even after aggressive auto-fix");
+                Protocol.log("DEBUG: Operation failed validation - likely position out of bounds");
+                Protocol.log("DEBUG: Op position: " + finalOp.position + ", content length: " + currentStateLength);
+
+                // 🔧 LAST RESORT: Insert at end of content
+                if (currentStateLength >= 0) {
+                    OperationalTransform.Operation fallbackOp =
+                            OperationalTransform.createInsert(currentStateLength, text, userId);
+
+                    if (OperationalTransform.isValidOperation(fallbackOp, currentState)) {
+                        String oldContent = doc.getContent();
+                        String newContent = OperationalTransform.applyOperation(oldContent, fallbackOp);
+                        doc.setContent(newContent);
+                        doc.addOperation(fallbackOp);
+                        success = true;
+                        appliedPosition = currentStateLength;
+
+                        Protocol.log("SUCCESS: Fallback insert applied at end position " + currentStateLength);
+                    }
+                }
+            }
+        }
+
+        Protocol.log("DEBUG: Final success: " + success + ", applied position: " + appliedPosition);
+        Protocol.log("=== ENHANCED INSERT RESULT END ===");
+        return new InsertResult(success, appliedPosition, text);
+    }
+
+
     private void createDocumentsDirectory() {
         try {
             Path documentsPath = Paths.get(Protocol.DOCUMENTS_FOLDER);
@@ -421,8 +557,9 @@ public class DocumentManager {
     /**
      * Text delete - Robust OT ile çakışma çözümü - DÜZELTME
      */
+
     public synchronized boolean deleteText(String fileId, int position, int length, String userId) {
-        Protocol.log("=== DELETE TEXT DEBUG ===");
+        Protocol.log("=== ENHANCED DELETE TEXT DEBUG ===");
         Protocol.log("DEBUG: deleteText - fileId: " + fileId + ", position: " + position +
                 ", length: " + length + ", userId: " + userId);
 
@@ -432,38 +569,37 @@ public class DocumentManager {
             return false;
         }
 
-        // Position ve length validation ve auto-fix
+        // Current content analysis
         String currentContent = doc.getContent();
+        int originalPosition = position;
+        int originalLength = length;
+
         Protocol.log("DEBUG: Current content length: " + currentContent.length());
+        Protocol.log("DEBUG: Original delete - pos: " + originalPosition + ", len: " + originalLength);
 
-        if (position < 0) {
-            Protocol.log("DEBUG: Position < 0, setting to 0");
-            position = 0;
-        }
-        if (position >= currentContent.length()) {
-            Protocol.log("DEBUG: Position >= content length, cannot delete");
+        // 🔧 STRICT POSITION AND LENGTH CLAMPING
+        if (currentContent.length() == 0) {
+            Protocol.log("ERROR: No content to delete");
             return false;
         }
 
-        // Length auto-fix
-        int maxLength = currentContent.length() - position;
-        if (length > maxLength) {
-            Protocol.log("DEBUG: Length too big, fixing: " + length + " → " + maxLength);
-            length = maxLength;
-        }
-        if (length <= 0) {
-            Protocol.log("DEBUG: Final length <= 0, cannot delete");
+        int clampedPosition = Math.max(0, Math.min(position, currentContent.length() - 1));
+        int maxLength = Math.max(0, currentContent.length() - clampedPosition);
+        int clampedLength = Math.max(1, Math.min(length, maxLength));
+
+        if (maxLength <= 0) {
+            Protocol.log("ERROR: No content available to delete at position " + position);
             return false;
         }
 
-        Protocol.log("DEBUG: Final delete params - pos: " + position + ", len: " + length);
+        Protocol.log("DEBUG: Clamped delete - pos: " + clampedPosition + ", len: " + clampedLength);
 
-        // Yeni operasyon oluştur
-        OperationalTransform.Operation newOp = OperationalTransform.createDelete(position, length, userId);
+        // Yeni operasyon oluştur with clamped values
+        OperationalTransform.Operation newOp = OperationalTransform.createDelete(clampedPosition, clampedLength, userId);
         Protocol.log("DEBUG: Created operation: " + newOp);
 
-        // Son operasyonlara karşı transform et
-        List<OperationalTransform.Operation> recentOps = doc.getRecentOperations(20);
+        // 🔧 REDUCED TRANSFORM SCOPE for stability
+        List<OperationalTransform.Operation> recentOps = doc.getRecentOperations(3); // Significantly reduced
         Protocol.log("DEBUG: Recent operations count: " + recentOps.size());
 
         List<OperationalTransform.Operation> transformedOps =
@@ -475,27 +611,55 @@ public class DocumentManager {
         for (OperationalTransform.Operation transformedOp : transformedOps) {
             Protocol.log("DEBUG: Checking transformed op: " + transformedOp);
 
-            boolean isValid = OperationalTransform.isValidOperation(transformedOp, doc.getContent());
-            Protocol.log("DEBUG: isValidOperation: " + isValid);
+            // 🔧 CONTENT-AWARE VALIDATION with auto-fix
+            String currentState = doc.getContent();
+            int currentStateLength = currentState.length();
 
-            if (isValid && transformedOp.length > 0) {
+            Protocol.log("DEBUG: Content state - length: " + currentStateLength +
+                    ", op position: " + transformedOp.position +
+                    ", op length: " + transformedOp.length);
+
+            // 🔧 AUTO-FIX TRANSFORMED OPERATION if out of bounds
+            OperationalTransform.Operation finalOp = transformedOp;
+
+            if (transformedOp.position >= currentStateLength) {
+                // Position completely out of bounds - move to safe position
+                int newPos = Math.max(0, currentStateLength - 1);
+                finalOp = transformedOp.withPosition(newPos);
+                Protocol.log("DEBUG: Position auto-fixed: " + transformedOp.position + " → " + newPos);
+            }
+
+            if (finalOp.position + finalOp.length > currentStateLength) {
+                // Length extends beyond content - trim length
+                int newLength = Math.max(1, currentStateLength - finalOp.position);
+                finalOp = finalOp.withLength(newLength);
+                Protocol.log("DEBUG: Length auto-fixed: " + transformedOp.length + " → " + newLength);
+            }
+
+            // Final validation
+            boolean isValid = OperationalTransform.isValidOperation(finalOp, currentState);
+            Protocol.log("DEBUG: isValidOperation: " + isValid + " (after auto-fix)");
+
+            if (isValid && finalOp.length > 0) {
                 String oldContent = doc.getContent();
-                String newContent = OperationalTransform.applyOperation(doc.getContent(), transformedOp);
+                String newContent = OperationalTransform.applyOperation(oldContent, finalOp);
                 doc.setContent(newContent);
-                doc.addOperation(transformedOp);
+                doc.addOperation(finalOp);
                 success = true;
 
-                Protocol.log(String.format("SUCCESS: Delete applied - %s pos:%d→%d len:%d→%d",
-                        fileId, position, transformedOp.position, length, transformedOp.length));
+                Protocol.log(String.format("SUCCESS: Delete applied - %s original pos:%d→%d len:%d→%d (fixed pos:%d len:%d)",
+                        fileId, originalPosition, transformedOp.position, originalLength, transformedOp.length,
+                        finalOp.position, finalOp.length));
                 Protocol.log("DEBUG: Content changed from length " + oldContent.length() +
                         " to " + newContent.length());
+
             } else {
-                Protocol.log("WARNING: Invalid or zero-length transformed operation: " + transformedOp);
+                Protocol.log("WARNING: Could not apply delete operation even after auto-fix");
             }
         }
 
         Protocol.log("DEBUG: Final success: " + success);
-        Protocol.log("========================");
+        Protocol.log("=== ENHANCED DELETE END ===");
         return success;
     }
 
@@ -804,11 +968,23 @@ public class DocumentManager {
             }
         }
 
-        public List<OperationalTransform.Operation> getRecentOperations(int count) {
-            synchronized (operationHistory) {
-                int fromIndex = Math.max(0, operationHistory.size() - count);
-                return new ArrayList<>(operationHistory.subList(fromIndex, operationHistory.size()));
+        public List<OperationalTransform.Operation> getRecentOperations(int maxCount) {
+            // 🔧 FURTHER REDUCTION for stability
+            int actualMax = Math.min(maxCount, 2); // Never more than 2 operations
+
+            if (operationHistory.size() <= actualMax) {
+                return new ArrayList<>(operationHistory);
             }
+
+            // Return only the most recent operations
+            List<OperationalTransform.Operation> recent = new ArrayList<>();
+            int startIndex = operationHistory.size() - actualMax;
+
+            for (int i = startIndex; i < operationHistory.size(); i++) {
+                recent.add(operationHistory.get(i));
+            }
+
+            return recent;
         }
 
         public Document copy() {
