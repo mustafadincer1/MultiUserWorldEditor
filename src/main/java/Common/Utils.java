@@ -47,6 +47,17 @@ public final class Utils {
         PrintWriter writer = new PrintWriter(
                 new OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true);
 
+        // 🔧 DEBUG: Newline içeren mesajları logla
+        if (message.contains("\n")) {
+            System.out.println("DEBUG: writeToSocket - Sending message with newlines:");
+            System.out.println("DEBUG: Message length: " + message.length());
+            System.out.println("DEBUG: Newline count: " + (message.length() - message.replace("\n", "").length()));
+
+            // İlk 200 karakteri göster (çok uzunsa)
+            String preview = message.length() > 200 ? message.substring(0, 200) + "..." : message;
+            System.out.println("DEBUG: Message preview: '" + preview.replace("\n", "\\n").replace("\r", "\\r") + "'");
+        }
+
         // Mesajın sonunda \n yoksa ekle
         if (!message.endsWith("\n")) {
             message += "\n";
@@ -54,6 +65,9 @@ public final class Utils {
 
         writer.print(message);
         writer.flush();
+
+        // 🔧 SUCCESS DEBUG
+        System.out.println("DEBUG: writeToSocket - Message sent successfully to " + socket.getRemoteSocketAddress());
     }
 
     // === FILE UTILITIES ===
@@ -136,6 +150,73 @@ public final class Utils {
             e.printStackTrace();
             return null;
         }
+    }
+    // Utils.java'ya eklenecek güvenli mesaj gönderme metodu:
+
+    /**
+     * Socket'e güvenli şekilde mesaj yazar - newline escape ile
+     */
+    public static void writeToSocketSafe(Socket socket, String message) throws IOException {
+        if (socket == null || socket.isClosed()) {
+            throw new IOException("Socket kapalı veya null");
+        }
+
+        if (message == null) {
+            throw new IllegalArgumentException("Mesaj null olamaz");
+        }
+
+        PrintWriter writer = new PrintWriter(
+                new OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true);
+
+        // 🔧 Newline karakterlerini escape et (content içinde)
+        String safeMessage = escapeNewlinesInContent(message);
+
+        // Mesajın sonunda \n yoksa ekle
+        if (!safeMessage.endsWith("\n")) {
+            safeMessage += "\n";
+        }
+
+        System.out.println("DEBUG: Sending safe message: " + safeMessage);
+        writer.print(safeMessage);
+        writer.flush();
+    }
+
+    /**
+     * Mesaj içeriğindeki newline karakterlerini escape eder
+     */
+    private static String escapeNewlinesInContent(String message) {
+        if (message == null) return null;
+
+        // MTP mesaj formatını parse et
+        String[] parts = message.split("\\|", 5);
+        if (parts.length < 4) {
+            return message; // Format geçersizse olduğu gibi döndür
+        }
+
+        // DATA kısmındaki content alanını bul ve escape et
+        String dataSection = parts[3];
+        if (dataSection.contains("content:")) {
+            // Pattern ve Matcher kullanarak content değerini bul
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("content:([^,]*)");
+            java.util.regex.Matcher matcher = pattern.matcher(dataSection);
+
+            StringBuffer sb = new StringBuffer();
+            while (matcher.find()) {
+                String contentValue = matcher.group(1);
+                String escapedContent = contentValue
+                        .replace("\n", "\\n")
+                        .replace("\r", "\\r")
+                        .replace("\t", "\\t");
+                matcher.appendReplacement(sb, "content:" + java.util.regex.Matcher.quoteReplacement(escapedContent));
+            }
+            matcher.appendTail(sb);
+
+            // Mesajı yeniden oluştur
+            parts[3] = sb.toString();
+            return String.join("|", parts);
+        }
+
+        return message;
     }
 
     /**

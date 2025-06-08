@@ -299,16 +299,48 @@ public class DocumentManager {
     /**
      * Text insert - Robust OT ile çakışma çözümü
      */
+
     public synchronized boolean insertText(String fileId, int position, String text, String userId) {
         Protocol.log("=== INSERT TEXT DEBUG ===");
         Protocol.log("DEBUG: insertText - fileId: " + fileId + ", position: " + position +
                 ", text: '" + text + "', userId: " + userId);
 
+        // 🔧 SPACE CHARACTER DEBUG
+        if (text != null) {
+            Protocol.log("DEBUG: Text length: " + text.length());
+            Protocol.log("DEBUG: Text isEmpty(): " + text.isEmpty());
+            if (text.equals(" ")) {
+                Protocol.log("DEBUG: *** SPACE CHARACTER DETECTED ***");
+            }
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                Protocol.log("DEBUG: Char[" + i + "]: '" + c + "' (ASCII: " + (int)c + ")");
+            }
+        }
+
         Document doc = documents.get(fileId);
-        if (doc == null || text == null || text.isEmpty()) {
-            Protocol.log("ERROR: Document null or text invalid - doc: " + (doc != null) +
-                    ", text: " + (text != null ? "'" + text + "'" : "null"));
+
+        // 🔧 VALIDATION DÜZELTMESİ - SPACE KARAKTERİ İÇİN
+        if (doc == null) {
+            Protocol.log("ERROR: Document not found for fileId: " + fileId);
             return false;
+        }
+
+        if (text == null) {
+            Protocol.log("ERROR: Text is null");
+            return false;
+        }
+
+        // ❌ ESKİ: text.isEmpty() space karakterini reddediyordu
+        // ✅ YENİ: Sadece gerçekten boş stringi reddet
+        if (text.length() == 0) {
+            Protocol.log("ERROR: Text is empty (length = 0)");
+            return false;
+        }
+
+        // Space karakteri için özel log
+        if (text.equals(" ")) {
+            Protocol.log("SUCCESS: Space character validation passed");
         }
 
         // Position validation ve auto-fix
@@ -337,10 +369,19 @@ public class DocumentManager {
         boolean success = false;
         for (OperationalTransform.Operation transformedOp : transformedOps) {
             Protocol.log("DEBUG: Checking transformed op: " + transformedOp);
-            Protocol.log("DEBUG: isValidOperation: " +
-                    OperationalTransform.isValidOperation(transformedOp, doc.getContent()));
 
-            if (OperationalTransform.isValidOperation(transformedOp, doc.getContent())) {
+            // 🔧 VALIDATION İÇİN ÖZEL SPACE DEBUG
+            boolean isValid = OperationalTransform.isValidOperation(transformedOp, doc.getContent());
+            Protocol.log("DEBUG: isValidOperation: " + isValid);
+
+            if (!isValid && transformedOp.content != null && transformedOp.content.equals(" ")) {
+                Protocol.log("WARNING: Space character operation marked as invalid!");
+                Protocol.log("DEBUG: Operation details - pos: " + transformedOp.position +
+                        ", content: '" + transformedOp.content + "'" +
+                        ", doc length: " + doc.getContent().length());
+            }
+
+            if (isValid) {
                 String oldContent = doc.getContent();
                 String newContent = OperationalTransform.applyOperation(doc.getContent(), transformedOp);
                 doc.setContent(newContent);
@@ -351,8 +392,21 @@ public class DocumentManager {
                         fileId, position, transformedOp.position, transformedOp.content));
                 Protocol.log("DEBUG: Content changed from length " + oldContent.length() +
                         " to " + newContent.length());
+
+                // Space character için özel success log
+                if (transformedOp.content.equals(" ")) {
+                    Protocol.log("🎉 SUCCESS: SPACE CHARACTER SUCCESSFULLY INSERTED! 🎉");
+                }
             } else {
                 Protocol.log("WARNING: Invalid transformed operation: " + transformedOp);
+
+                // Space karakteri için özel invalid debug
+                if (transformedOp.content != null && transformedOp.content.equals(" ")) {
+                    Protocol.log("💥 ERROR: SPACE CHARACTER OPERATION IS INVALID! 💥");
+                    Protocol.log("DEBUG: Space op pos: " + transformedOp.position);
+                    Protocol.log("DEBUG: Doc length: " + doc.getContent().length());
+                    Protocol.log("DEBUG: Position > length: " + (transformedOp.position > doc.getContent().length()));
+                }
             }
         }
 
@@ -364,45 +418,84 @@ public class DocumentManager {
     /**
      * Text delete - Robust OT ile çakışma çözümü
      */
+    /**
+     * Text delete - Robust OT ile çakışma çözümü - DÜZELTME
+     */
     public synchronized boolean deleteText(String fileId, int position, int length, String userId) {
+        Protocol.log("=== DELETE TEXT DEBUG ===");
+        Protocol.log("DEBUG: deleteText - fileId: " + fileId + ", position: " + position +
+                ", length: " + length + ", userId: " + userId);
+
         Document doc = documents.get(fileId);
         if (doc == null || length <= 0) {
+            Protocol.log("ERROR: Document null or invalid length");
             return false;
         }
 
-        // Position ve length validation
+        // Position ve length validation ve auto-fix
         String currentContent = doc.getContent();
-        if (position < 0) position = 0;
-        if (position >= currentContent.length()) return false;
+        Protocol.log("DEBUG: Current content length: " + currentContent.length());
+
+        if (position < 0) {
+            Protocol.log("DEBUG: Position < 0, setting to 0");
+            position = 0;
+        }
+        if (position >= currentContent.length()) {
+            Protocol.log("DEBUG: Position >= content length, cannot delete");
+            return false;
+        }
 
         // Length auto-fix
-        length = Math.min(length, currentContent.length() - position);
-        if (length <= 0) return false;
+        int maxLength = currentContent.length() - position;
+        if (length > maxLength) {
+            Protocol.log("DEBUG: Length too big, fixing: " + length + " → " + maxLength);
+            length = maxLength;
+        }
+        if (length <= 0) {
+            Protocol.log("DEBUG: Final length <= 0, cannot delete");
+            return false;
+        }
+
+        Protocol.log("DEBUG: Final delete params - pos: " + position + ", len: " + length);
 
         // Yeni operasyon oluştur
         OperationalTransform.Operation newOp = OperationalTransform.createDelete(position, length, userId);
+        Protocol.log("DEBUG: Created operation: " + newOp);
 
         // Son operasyonlara karşı transform et
         List<OperationalTransform.Operation> recentOps = doc.getRecentOperations(20);
+        Protocol.log("DEBUG: Recent operations count: " + recentOps.size());
+
         List<OperationalTransform.Operation> transformedOps =
                 OperationalTransform.transformOperationList(newOp, recentOps);
+        Protocol.log("DEBUG: Transformed operations count: " + transformedOps.size());
 
         // Transform edilmiş operasyonları uygula
         boolean success = false;
         for (OperationalTransform.Operation transformedOp : transformedOps) {
-            if (OperationalTransform.isValidOperation(transformedOp, doc.getContent()) &&
-                    transformedOp.length > 0) {
+            Protocol.log("DEBUG: Checking transformed op: " + transformedOp);
 
+            boolean isValid = OperationalTransform.isValidOperation(transformedOp, doc.getContent());
+            Protocol.log("DEBUG: isValidOperation: " + isValid);
+
+            if (isValid && transformedOp.length > 0) {
+                String oldContent = doc.getContent();
                 String newContent = OperationalTransform.applyOperation(doc.getContent(), transformedOp);
                 doc.setContent(newContent);
                 doc.addOperation(transformedOp);
                 success = true;
 
-                Protocol.log(String.format("Delete uygulandı: %s pos:%d->%d len:%d->%d",
+                Protocol.log(String.format("SUCCESS: Delete applied - %s pos:%d→%d len:%d→%d",
                         fileId, position, transformedOp.position, length, transformedOp.length));
+                Protocol.log("DEBUG: Content changed from length " + oldContent.length() +
+                        " to " + newContent.length());
+            } else {
+                Protocol.log("WARNING: Invalid or zero-length transformed operation: " + transformedOp);
             }
         }
 
+        Protocol.log("DEBUG: Final success: " + success);
+        Protocol.log("========================");
         return success;
     }
 

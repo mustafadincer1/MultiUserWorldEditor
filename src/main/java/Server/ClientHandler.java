@@ -388,6 +388,13 @@ public class ClientHandler implements Runnable {
                 List<String> currentUsers = server.getDocumentManager().getFileUsers(cleanFileId);
                 String usersData = String.join(",", currentUsers);
 
+                String docContent = doc.getContent();
+                Protocol.log("DEBUG: Sending FILE_CONTENT - length: " + docContent.length() +
+                        ", has newlines: " + docContent.contains("\n"));
+                if (docContent.contains("\n")) {
+                    Protocol.log("DEBUG: Content preview: '" + docContent.replace("\n", "\\n") + "'");
+                }
+
                 Message response = Message.createFileContent(userId, cleanFileId, doc.getContent())
                         .addData("users", usersData)
                         .addData("filename", doc.getFileName());
@@ -407,20 +414,17 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     * TEXT_INSERT mesajını işle
+     * TEXT_INSERT mesajını işle - SPACE CHARACTER FIX
      */
     private void handleTextInsert(Message message) {
         if (!checkAuthenticated()) return;
 
         String fileId = message.getFileId();
 
-        // ====== CRITICAL DEBUG ======
-        Protocol.log("=== TEXT_INSERT DEBUG ===");
-        Protocol.log("DEBUG: handleTextInsert - userId: " + userId);
-        Protocol.log("DEBUG: handleTextInsert - fileId: '" + fileId + "'");
-        Protocol.log("DEBUG: openFiles contents: " + openFiles);
-        Protocol.log("DEBUG: openFiles.contains(fileId): " + openFiles.contains(fileId));
-        Protocol.log("========================");
+        System.out.println("=== SERVER TEXT INSERT DEBUG ===");
+        System.out.println("DEBUG: handleTextInsert - userId: " + userId);
+        System.out.println("DEBUG: handleTextInsert - fileId: '" + fileId + "'");
+        System.out.println("========================");
 
         if (!isFileOpen(fileId)) {
             sendError("Dosya açık değil");
@@ -429,34 +433,84 @@ public class ClientHandler implements Runnable {
 
         try {
             Integer position = message.getDataAsInt("position");
-            String text = message.getData("text");
+            String textValue = message.getData("text");
 
+            // 🔧 SPECIAL CHARACTERS MARKER DECODING
+            String text;
+            if ("__SPACE__".equals(textValue)) {
+                text = " ";
+                System.out.println("DEBUG: *** SERVER - SPACE CHARACTER DECODED ***");
+            } else if ("__NEWLINE__".equals(textValue)) {
+                text = "\n";
+                System.out.println("DEBUG: *** SERVER - NEWLINE CHARACTER DECODED ***");
+            } else if ("__CRLF__".equals(textValue)) {
+                text = "\r\n";
+                System.out.println("DEBUG: *** SERVER - CRLF CHARACTER DECODED ***");
+            } else if ("__TAB__".equals(textValue)) {
+                text = "\t";
+                System.out.println("DEBUG: *** SERVER - TAB CHARACTER DECODED ***");
+            } else {
+                text = textValue;
+            }
+
+            System.out.println("DEBUG: Final decoded text: '" + text + "' (length: " +
+                    (text != null ? text.length() : "null") + ")");
+            System.out.println("DEBUG: Position: " + position);
+
+            // Validation
             if (position == null || text == null) {
+                System.out.println("ERROR: Invalid data - position: " + position + ", text: " +
+                        (text != null ? "'" + text + "'" : "null"));
                 sendError("Position ve text gerekli");
                 return;
             }
 
-            // DocumentManager'da Robust OT ile insert
+            // DocumentManager'da insert - BAŞARIYI LOGLA
             boolean success = server.getDocumentManager()
                     .insertText(fileId, position, text, userId);
 
             if (success) {
-                // Diğer kullanıcılara broadcast (OT sonrası pozisyon)
-                Message updateMsg = Message.createTextUpdate(userId, fileId, "insert", position, text);
+                // Broadcast encoding
+                String broadcastText;
+                if (text.equals(" ")) {
+                    broadcastText = "__SPACE__";
+                } else if (text.equals("\n")) {
+                    broadcastText = "__NEWLINE__";
+                    System.out.println("DEBUG: SERVER - Newline encoded for broadcast");
+                } else if (text.equals("\r\n")) {
+                    broadcastText = "__CRLF__";
+                } else if (text.equals("\t")) {
+                    broadcastText = "__TAB__";
+                } else {
+                    broadcastText = text;
+                }
+
+                // Broadcast message
+                Message updateMsg = Message.createTextUpdate(userId, fileId, "insert", position, broadcastText);
                 server.broadcastToFile(fileId, updateMsg, userId);
 
-                Protocol.log("Text insert: " + fileId + " pos:" + position + " by " + getUserId());
+                // Success log
+                if (text.equals("\n")) {
+                    System.out.println("🎉 SERVER SUCCESS: NEWLINE CHARACTER INSERTED! 🎉");
+                    System.out.println("Text insert: " + fileId + " pos:" + position + " NEWLINE by " + getUserId());
+                } else if (text.equals(" ")) {
+                    System.out.println("🎉 SERVER SUCCESS: SPACE CHARACTER INSERTED! 🎉");
+                    System.out.println("Text insert: " + fileId + " pos:" + position + " SPACE by " + getUserId());
+                } else {
+                    System.out.println("Text insert: " + fileId + " pos:" + position + " text:'" + text + "' by " + getUserId());
+                }
 
             } else {
+                System.out.println("ERROR: DocumentManager.insertText failed");
                 sendError("Metin eklenemedi");
             }
 
         } catch (Exception e) {
-            Protocol.logError("Text insert hatası: " + getUserId(), e);
+            System.err.println("Text insert hatası: " + getUserId() + " - " + e.getMessage());
+            e.printStackTrace();
             sendError("Metin ekleme hatası");
         }
     }
-
     /**
      * TEXT_DELETE mesajını işle
      */
@@ -532,7 +586,10 @@ public class ClientHandler implements Runnable {
     // === UTILITY METHODS ===
 
     /**
-     * İstemciye mesaj gönder
+     * İstemciye mesaj gönder - newline-safe version
+     */
+    /**
+     * İstemciye mesaj gönder - debug enhanced version
      */
     public void sendMessage(Message message) {
         if (!isConnected.get() || clientSocket.isClosed()) {
@@ -541,8 +598,21 @@ public class ClientHandler implements Runnable {
 
         try {
             String serialized = message.serialize();
+
+            // 🔧 FILE_CONTENT mesajları için özel debug
+            if (message.getType() == Message.MessageType.FILE_CONTENT) {
+                String content = message.getData("content");
+                if (content != null && (content.contains("\n") || content.contains("\r"))) {
+                    Protocol.log("DEBUG: FILE_CONTENT has newlines - length: " + content.length());
+                    Protocol.log("DEBUG: Content preview: '" + content.replace("\n", "\\n").replace("\r", "\\r") + "'");
+                    Protocol.log("DEBUG: Full serialized message length: " + serialized.length());
+                }
+            }
+
             Utils.writeToSocket(clientSocket, serialized);
             messagesSent++;
+
+            Protocol.log("DEBUG: Message sent successfully: " + message.getType() + " to " + getUserId());
 
         } catch (IOException e) {
             Protocol.logError("Mesaj gönderme hatası: " + getUserId(), e);

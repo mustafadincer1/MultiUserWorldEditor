@@ -181,49 +181,91 @@ public class OperationalTransform {
      * En karmaşık durum - çakışan silme operasyonları
      */
     private static Operation transformDeleteDelete(Operation op1, Operation op2) {
+        Protocol.log("DEBUG: transformDeleteDelete - op1: " + op1 + " vs op2: " + op2);
+
+        // Op1 aralığı
+        int op1Start = op1.position;
         int op1End = op1.position + op1.length;
+
+        // Op2 aralığı
+        int op2Start = op2.position;
         int op2End = op2.position + op2.length;
 
-        if (op2End <= op1.position) {
-            // op2 tamamen op1'den önce - op1'i geri kaydır
-            return op1.withPosition(op1.position - op2.length);
-        } else if (op2.position >= op1End) {
-            // op2 tamamen op1'den sonra - değişiklik yok
-            return op1;
-        } else {
-            // Çakışma var - overlap hesapla
-            return handleDeleteOverlap(op1, op2);
+        Protocol.log("DEBUG: Op1 range: [" + op1Start + "-" + op1End + "], Op2 range: [" + op2Start + "-" + op2End + "]");
+
+        // DURUM 1: Op2 tamamen op1'den önce
+        if (op2End <= op1Start) {
+            // Op2 silindi, op1'i geri kaydır
+            int newPosition = Math.max(0, op1Start - op2.length);
+            Protocol.log("DEBUG: Case 1 - Op2 before op1, shifting position: " + op1Start + " → " + newPosition);
+            return op1.withPosition(newPosition);
         }
+
+        // DURUM 2: Op2 tamamen op1'den sonra
+        if (op2Start >= op1End) {
+            // Op2 op1'i etkilemiyor
+            Protocol.log("DEBUG: Case 2 - Op2 after op1, no change");
+            return op1;
+        }
+
+        // DURUM 3-6: Çakışma durumları
+
+        // DURUM 3: Op1 tamamen op2 içinde - op1 geçersiz olur
+        if (op1Start >= op2Start && op1End <= op2End) {
+            Protocol.log("DEBUG: Case 3 - Op1 completely inside op2, invalidating op1");
+            return op1.withLength(0); // Geçersiz operasyon
+        }
+
+        // DURUM 4: Op2 tamamen op1 içinde - op1'in uzunluğu azalır
+        if (op2Start >= op1Start && op2End <= op1End) {
+            int newLength = op1.length - op2.length;
+            Protocol.log("DEBUG: Case 4 - Op2 inside op1, reducing length: " + op1.length + " → " + newLength);
+            return op1.withLength(Math.max(0, newLength));
+        }
+
+        // DURUM 5: Op1 başlıyor, op2 ile çakışıyor (partial overlap - op1 starts first)
+        if (op1Start < op2Start && op1End > op2Start && op1End <= op2End) {
+            // Op1'in sadece op2'den önceki kısmı kalır
+            int newLength = op2Start - op1Start;
+            Protocol.log("DEBUG: Case 5 - Op1 starts first, partial overlap, new length: " + newLength);
+            return op1.withLength(Math.max(0, newLength));
+        }
+
+        // DURUM 6: Op2 başlıyor, op1 ile çakışıyor (partial overlap - op2 starts first)
+        if (op2Start < op1Start && op2End > op1Start && op2End < op1End) {
+            // Op1'in sadece op2'den sonraki kısmı kalır
+            int newPosition = op2Start; // Op2'nin başlangıç pozisyonuna kayar
+            int newLength = op1End - op2End;
+            Protocol.log("DEBUG: Case 6 - Op2 starts first, partial overlap, pos: " + op1Start +
+                    " → " + newPosition + ", length: " + op1.length + " → " + newLength);
+            return op1.withPosition(newPosition).withLength(Math.max(0, newLength));
+        }
+
+        // DURUM 7: Op1 ve Op2 aynı pozisyonda başlıyor
+        if (op1Start == op2Start) {
+            if (op1.length <= op2.length) {
+                // Op1 tamamen kapsanıyor
+                Protocol.log("DEBUG: Case 7a - Same start, op1 shorter or equal, invalidating");
+                return op1.withLength(0);
+            } else {
+                // Op1'in sadece op2'den sonraki kısmı kalır
+                int newLength = op1.length - op2.length;
+                Protocol.log("DEBUG: Case 7b - Same start, op1 longer, new length: " + newLength);
+                return op1.withPosition(op2Start).withLength(newLength);
+            }
+        }
+
+        // Fallback - bu duruma gelmemeli
+        Protocol.log("WARNING: transformDeleteDelete fallback case reached");
+        return op1;
     }
 
     /**
      * DELETE çakışmalarını handle eder
      */
     private static Operation handleDeleteOverlap(Operation op1, Operation op2) {
-        int op1End = op1.position + op1.length;
-        int op2End = op2.position + op2.length;
-
-        // Çakışan aralığı hesapla
-        int overlapStart = Math.max(op1.position, op2.position);
-        int overlapEnd = Math.min(op1End, op2End);
-        int overlapLength = Math.max(0, overlapEnd - overlapStart);
-
-        if (overlapLength >= op1.length) {
-            // op1 tamamen op2 içinde - op1'i geçersiz kıl
-            return op1.withLength(0);
-        }
-
-        // Kısmi çakışma
-        if (op1.position < op2.position) {
-            // op1 başlıyor, op2 çakışıyor - op1'in uzunluğunu kısalt
-            int newLength = op2.position - op1.position;
-            return op1.withLength(newLength);
-        } else {
-            // op2 başlıyor, op1 çakışıyor - op1'i kaydır ve kısalt
-            int newPosition = op2.position;
-            int newLength = op1.length - overlapLength;
-            return op1.withPosition(newPosition).withLength(Math.max(0, newLength));
-        }
+        Protocol.log("WARNING: handleDeleteOverlap called - using transformDeleteDelete instead");
+        return transformDeleteDelete(op1, op2);
     }
 
     /**
@@ -343,24 +385,30 @@ public class OperationalTransform {
      */
     public static boolean isValidOperation(Operation op, String currentText) {
         if (op == null || currentText == null) {
+            Protocol.log("DEBUG: isValidOperation - null check failed");
             return false;
         }
 
         if (op.isInsert()) {
-            // INSERT için pozisyon text uzunluğundan büyük olabilir (append işlemi)
-            // Sadece negatif olmadığını kontrol et
+            // 🔧 INSERT için düzeltilmiş validation
             boolean valid = op.position >= 0 &&
                     op.content != null &&
+                    op.content.length() > 0 && // isEmpty() yerine length kontrolü
                     op.length == op.content.length();
 
-            // DEBUG için log ekle
-            if (!valid) {
-                Protocol.log("DEBUG: INSERT validation failed - pos: " + op.position +
-                        ", content: " + (op.content != null ? "'" + op.content + "'" : "null") +
-                        ", text length: " + currentText.length());
+            // Space character için özel debug
+            if (op.content != null && op.content.equals(" ")) {
+                Protocol.log("DEBUG: Space character validation - pos: " + op.position +
+                        ", content length: " + op.content.length() +
+                        ", text length: " + currentText.length() +
+                        ", valid: " + valid);
             }
 
+            // ❌ ESKİ KÖTÜ KONTROL: position <= text.length()
+            // ✅ YENİ: INSERT için pozisyon text sonundan büyük olabilir (append)
+
             return valid;
+
         } else {
             // DELETE için mevcut kontrol doğru
             boolean valid = op.position >= 0 &&
@@ -376,6 +424,7 @@ public class OperationalTransform {
             return valid;
         }
     }
+
 
     /**
      * Factory metotları
