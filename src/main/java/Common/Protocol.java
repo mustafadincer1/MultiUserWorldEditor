@@ -1,10 +1,12 @@
 package Common;
 
+import java.nio.file.Paths;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * MTP (Multi-user Text Protocol) Protokol Sabitleri - Sadeleştirilmiş Versiyon
  * Sadece gerekli sabitler ve temel utility metotları
+ * UPDATED: Debug metodları eklendi
  */
 public final class Protocol {
 
@@ -147,6 +149,82 @@ public final class Protocol {
      */
     public static String safeTrim(String str) {
         return str == null ? "" : str.trim();
+    }
+
+    // === 🔧 NEW: DEBUG METODLARI ===
+
+    /**
+     * Current working directory'yi logla
+     */
+    public static void logCurrentWorkingDirectory() {
+        try {
+            String userDir = System.getProperty("user.dir");
+            String absolutePath = Paths.get("").toAbsolutePath().toString();
+            String documentsAbsolute = Paths.get(DOCUMENTS_FOLDER).toAbsolutePath().toString();
+
+            log("=== WORKING DIRECTORY DEBUG ===");
+            log("System Property (user.dir): " + userDir);
+            log("Paths.get().toAbsolutePath(): " + absolutePath);
+            log("Documents folder path: " + DOCUMENTS_FOLDER);
+            log("Documents absolute path: " + documentsAbsolute);
+            log("===============================");
+
+        } catch (Exception e) {
+            logError("Working directory debug hatası", e);
+        }
+    }
+
+    /**
+     * Documents klasörünün durumunu kontrol et ve logla
+     */
+    public static void checkDocumentsFolder() {
+        try {
+            java.nio.file.Path documentsPath = Paths.get(DOCUMENTS_FOLDER);
+            boolean exists = java.nio.file.Files.exists(documentsPath);
+            boolean isDirectory = java.nio.file.Files.isDirectory(documentsPath);
+            boolean isWritable = java.nio.file.Files.isWritable(documentsPath);
+
+            log("=== DOCUMENTS FOLDER STATUS ===");
+            log("Documents path: " + documentsPath.toAbsolutePath());
+            log("Exists: " + exists);
+            log("Is directory: " + isDirectory);
+            log("Is writable: " + isWritable);
+
+            if (exists && isDirectory) {
+                try {
+                    long fileCount = java.nio.file.Files.list(documentsPath).count();
+                    log("File count: " + fileCount);
+
+                    // İlk 5 dosyayı listele
+                    log("Files in directory:");
+                    java.nio.file.Files.list(documentsPath)
+                            .limit(5)
+                            .forEach(path -> log("  - " + path.getFileName()));
+
+                } catch (Exception e) {
+                    log("Could not list files: " + e.getMessage());
+                }
+            }
+
+            log("==============================");
+
+        } catch (Exception e) {
+            logError("Documents folder check hatası", e);
+        }
+    }
+
+    /**
+     * Sistem bilgilerini logla
+     */
+    public static void logSystemInfo() {
+        log("=== SYSTEM INFO ===");
+        log("OS: " + System.getProperty("os.name"));
+        log("Java Version: " + System.getProperty("java.version"));
+        log("User Home: " + System.getProperty("user.home"));
+        log("User Dir: " + System.getProperty("user.dir"));
+        log("File Separator: " + System.getProperty("file.separator"));
+        log("Path Separator: " + System.getProperty("path.separator"));
+        log("==================");
     }
 
     // === PROJE BİLGİLERİ ===

@@ -12,6 +12,7 @@ import java.util.concurrent.*;
 /**
  * Robust Operational Transform entegreli Document Manager
  * Çok kullanıcılı eş zamanlı düzenleme, 3+ kullanıcı conflict resolution
+ * UPDATED: fileName - fileId.txt formatında kayıt
  */
 public class DocumentManager {
 
@@ -25,11 +26,18 @@ public class DocumentManager {
     private final ScheduledExecutorService autoSaveExecutor;
 
     /**
-     * Constructor
+     * Constructor - UPDATED: Debug bilgileri eklendi
      */
     public DocumentManager() {
+        // 🔧 NEW: Sistem bilgilerini logla
+        Protocol.logSystemInfo();
+        Protocol.logCurrentWorkingDirectory();
+
         // Documents klasörü oluştur
         createDocumentsDirectory();
+
+        // 🔧 NEW: Documents klasörü durumunu kontrol et
+        Protocol.checkDocumentsFolder();
 
         // Auto-save her 30 saniyede bir
         this.autoSaveExecutor = Executors.newSingleThreadScheduledExecutor();
@@ -37,6 +45,7 @@ public class DocumentManager {
 
         Protocol.log("DocumentManager başlatıldı (Robust OT ile)");
     }
+
     public static class InsertResult {
         public final boolean success;
         public final int appliedPosition;
@@ -176,7 +185,6 @@ public class DocumentManager {
         return new InsertResult(success, appliedPosition, text);
     }
 
-
     private void createDocumentsDirectory() {
         try {
             Path documentsPath = Paths.get(Protocol.DOCUMENTS_FOLDER);
@@ -192,7 +200,7 @@ public class DocumentManager {
     // === DOCUMENT OPERATIONS ===
 
     /**
-     * Yeni doküman oluştur
+     * Yeni doküman oluştur - UPDATED: Hemen disk'e kaydet
      */
     public String createDocument(String fileName, String creatorUserId) {
         if (!Protocol.isValidFilename(fileName)) {
@@ -204,19 +212,36 @@ public class DocumentManager {
             // Unique file ID
             String fileId = Protocol.generateFileId();
 
-            // Dosya uzantısı kontrolü
-            if (!fileName.endsWith(Protocol.FILE_EXTENSION)) {
-                fileName += Protocol.FILE_EXTENSION;
-            }
+            // 🔧 UPDATED: Dosya uzantısı kontrolü kaldırıldı (artık fileName - fileId.txt formatında)
+            String cleanFileName = fileName;
 
             // Yeni document
-            Document document = new Document(fileId, fileName, creatorUserId);
+            Document document = new Document(fileId, cleanFileName, creatorUserId);
+
+            // 🔧 NEW: Varsayılan içerik ekle
+            String defaultContent = ""; // Boş dosya olarak başlat
+            document.setContent(defaultContent);
+
+            // Memory'e ekle
             documents.put(fileId, document);
 
             // Kullanıcıyı ekle
             addUserToFile(fileId, creatorUserId);
 
-            Protocol.log("Doküman oluşturuldu: " + fileName + " (" + fileId + ") by " + creatorUserId);
+            // 🔧 NEW: Hemen disk'e kaydet
+            boolean saved = saveDocument(fileId);
+            if (saved) {
+                Protocol.log("SUCCESS: Doküman oluşturuldu ve kaydedildi: " + cleanFileName + " (" + fileId + ") by " + creatorUserId);
+
+                // Disk'teki dosya yolunu da logla
+                String diskFileName = document.getDiskFileName();
+                String fullPath = Protocol.DOCUMENTS_FOLDER + diskFileName;
+                Protocol.log("DEBUG: Disk dosya yolu: " + fullPath);
+
+            } else {
+                Protocol.log("WARNING: Doküman oluşturuldu ama kaydedilemedi: " + cleanFileName + " (" + fileId + ")");
+            }
+
             return fileId;
 
         } catch (Exception e) {
@@ -268,10 +293,6 @@ public class DocumentManager {
         return null;
     }
 
-
-
-    // DocumentManager.java'ya bu metodları ekleyin
-
     /**
      * PUBLIC loadDocument metodu - ClientHandler için
      */
@@ -319,10 +340,10 @@ public class DocumentManager {
     }
 
     /**
-     * loadDocumentFromDisk metodunu debug ile güncelleyin
+     * 🔧 UPDATED: loadDocumentFromDisk metodunu yeni dosya formatına göre güncelle
      */
     private Document loadDocumentFromDisk(String fileId) {
-        Protocol.log("=== LOAD DOCUMENT FROM DISK DEBUG ===");
+        Protocol.log("=== LOAD DOCUMENT FROM DISK DEBUG (UPDATED FORMAT) ===");
         Protocol.log("DEBUG: fileId: '" + fileId + "'");
 
         try {
@@ -335,21 +356,77 @@ public class DocumentManager {
 
             Protocol.log("DEBUG: cleanFileId: '" + cleanFileId + "'");
 
-            String fileName = cleanFileId + Protocol.FILE_EXTENSION;
-            String filePath = Protocol.DOCUMENTS_FOLDER + fileName;
+            // 🔧 UPDATED: Yeni formatda dosya arama - fileName - fileId.txt pattern'i
+            String documentsPath = Protocol.DOCUMENTS_FOLDER;
+            Protocol.log("DEBUG: Documents klasörü: " + documentsPath);
 
-            Protocol.log("DEBUG: Yükleme dosya yolu: " + filePath);
-            Protocol.log("DEBUG: Mutlak yol: " + Paths.get(filePath).toAbsolutePath());
+            // Documents klasöründeki tüm dosyaları tara
+            Path documentsDir = Paths.get(documentsPath);
+            if (!Files.exists(documentsDir)) {
+                Protocol.log("ERROR: Documents klasörü bulunamadı: " + documentsPath);
+                return null;
+            }
 
-            // Dosya var mı kontrol et
-            boolean fileExists = Utils.fileExists(filePath);
-            Protocol.log("DEBUG: Utils.fileExists(): " + fileExists);
+            // fileId ile biten dosyaları ara
+            String targetPattern = " - " + cleanFileId + ".txt";
+            Protocol.log("DEBUG: Aranan pattern: *" + targetPattern);
 
-            // Java Files ile de kontrol et
-            Path path = Paths.get(filePath);
-            boolean javaExists = Files.exists(path);
-            boolean javaReadable = Files.isReadable(path);
-            boolean javaRegular = Files.isRegularFile(path);
+            Path matchingFile = null;
+            String matchingFileName = null;
+
+            try {
+                matchingFile = Files.list(documentsDir)
+                        .filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(targetPattern))
+                        .findFirst()
+                        .orElse(null);
+
+                if (matchingFile != null) {
+                    matchingFileName = matchingFile.getFileName().toString();
+                    Protocol.log("DEBUG: Eşleşen dosya bulundu: " + matchingFileName);
+                } else {
+                    Protocol.log("DEBUG: Pattern ile eşleşen dosya bulunamadı");
+                }
+
+            } catch (IOException e) {
+                Protocol.log("ERROR: Dosya tarama hatası: " + e.getMessage());
+            }
+
+            // Eşleşen dosya bulunamadıysa test dosyası oluştur
+            if (matchingFile == null) {
+                Protocol.log("DEBUG: Dosya bulunamadı, test dosyası oluşturuluyor...");
+                createTestFileIfNeeded(cleanFileId);
+
+                // Tekrar ara
+                try {
+                    matchingFile = Files.list(documentsDir)
+                            .filter(Files::isRegularFile)
+                            .filter(path -> path.getFileName().toString().endsWith(targetPattern))
+                            .findFirst()
+                            .orElse(null);
+
+                    if (matchingFile != null) {
+                        matchingFileName = matchingFile.getFileName().toString();
+                        Protocol.log("DEBUG: Test dosyası sonrası bulundu: " + matchingFileName);
+                    }
+                } catch (IOException e) {
+                    Protocol.log("ERROR: Test dosyası sonrası tarama hatası: " + e.getMessage());
+                }
+            }
+
+            // Hala bulunamadıysa hata
+            if (matchingFile == null) {
+                Protocol.log("ERROR: Dosya hala bulunamadı: " + cleanFileId);
+                return null;
+            }
+
+            String filePath = matchingFile.toString();
+            Protocol.log("DEBUG: Dosya yolu: " + filePath);
+
+            // Dosya bilgileri
+            boolean javaExists = Files.exists(matchingFile);
+            boolean javaReadable = Files.isReadable(matchingFile);
+            boolean javaRegular = Files.isRegularFile(matchingFile);
 
             Protocol.log("DEBUG: Files.exists(): " + javaExists);
             Protocol.log("DEBUG: Files.isReadable(): " + javaReadable);
@@ -357,27 +434,11 @@ public class DocumentManager {
 
             if (javaExists) {
                 try {
-                    long size = Files.size(path);
+                    long size = Files.size(matchingFile);
                     Protocol.log("DEBUG: Dosya boyutu: " + size + " bytes");
                 } catch (Exception e) {
                     Protocol.log("DEBUG: Dosya boyutu alınamadı: " + e.getMessage());
                 }
-            }
-
-            // Dosya yoksa test dosyası oluştur
-            if (!fileExists) {
-                Protocol.log("DEBUG: Dosya bulunamadı, test dosyası oluşturuluyor...");
-                createTestFileIfNeeded(cleanFileId);
-
-                // Tekrar kontrol et
-                fileExists = Utils.fileExists(filePath);
-                Protocol.log("DEBUG: Test dosyası sonrası Utils.fileExists(): " + fileExists);
-            }
-
-            // Hala yoksa hata
-            if (!fileExists) {
-                Protocol.log("ERROR: Dosya hala bulunamadı: " + filePath);
-                return null;
             }
 
             // Dosyayı oku
@@ -392,8 +453,12 @@ public class DocumentManager {
             Protocol.log("DEBUG: İçerik (ilk 100 karakter): '" +
                     (content.length() > 100 ? content.substring(0, 100) + "..." : content) + "'");
 
+            // 🔧 UPDATED: Original fileName'i dosya adından çıkar
+            String originalFileName = extractOriginalFileName(matchingFileName, cleanFileId);
+            Protocol.log("DEBUG: Çıkarılan original fileName: " + originalFileName);
+
             // Document oluştur
-            Document doc = new Document(cleanFileId, fileName, "system");
+            Document doc = new Document(cleanFileId, originalFileName, "system");
             doc.setContent(content);
 
             Protocol.log("SUCCESS: Doküman diskten yüklendi: " + cleanFileId + " (" + content.length() + " karakter)");
@@ -404,6 +469,23 @@ public class DocumentManager {
             Protocol.logError("ERROR: Diskten yükleme hatası: " + fileId, e);
             return null;
         }
+    }
+
+    /**
+     * 🔧 NEW: Dosya adından original fileName'i çıkar
+     */
+    private String extractOriginalFileName(String diskFileName, String fileId) {
+        // diskFileName: "My Document - file_123456.txt"
+        // fileId: "file_123456"
+        // return: "My Document"
+
+        String pattern = " - " + fileId + ".txt";
+        if (diskFileName.endsWith(pattern)) {
+            return diskFileName.substring(0, diskFileName.length() - pattern.length());
+        }
+
+        // Fallback: dosya adını olduğu gibi döndür
+        return diskFileName;
     }
 
     /**
@@ -435,7 +517,6 @@ public class DocumentManager {
     /**
      * Text insert - Robust OT ile çakışma çözümü
      */
-
     public synchronized boolean insertText(String fileId, int position, String text, String userId) {
         Protocol.log("=== INSERT TEXT DEBUG ===");
         Protocol.log("DEBUG: insertText - fileId: " + fileId + ", position: " + position +
@@ -552,12 +633,8 @@ public class DocumentManager {
     }
 
     /**
-     * Text delete - Robust OT ile çakışma çözümü
-     */
-    /**
      * Text delete - Robust OT ile çakışma çözümü - DÜZELTME
      */
-
     public synchronized boolean deleteText(String fileId, int position, int length, String userId) {
         Protocol.log("=== ENHANCED DELETE TEXT DEBUG ===");
         Protocol.log("DEBUG: deleteText - fileId: " + fileId + ", position: " + position +
@@ -699,21 +776,36 @@ public class DocumentManager {
     // === FILE MANAGEMENT ===
 
     /**
-     * Dokümanı kaydet
+     * 🔧 UPDATED: Dokümanı kaydet - fileName - fileId.txt formatında
      */
     public boolean saveDocument(String fileId) {
         Document doc = documents.get(fileId);
         if (doc == null) {
+            Protocol.log("ERROR: Document not found for fileId: " + fileId);
             return false;
         }
 
         try {
-            String filePath = Protocol.DOCUMENTS_FOLDER + fileId + Protocol.FILE_EXTENSION;
-            Utils.writeFileContent(filePath, doc.getContent());
-            doc.markSaved();
+            // 🔧 NEW FORMAT: fileName - fileId.txt
+            String fileName = doc.getFileName();
+            String diskFileName = fileName + " - " + fileId + ".txt";
+            String filePath = Protocol.DOCUMENTS_FOLDER + diskFileName;
 
-            Protocol.log("Doküman kaydedildi: " + fileId + " (" + doc.getContent().length() + " karakter)");
-            return true;
+            Protocol.log("DEBUG: Saving document - fileId: " + fileId);
+            Protocol.log("DEBUG: Original fileName: " + fileName);
+            Protocol.log("DEBUG: Disk fileName: " + diskFileName);
+            Protocol.log("DEBUG: Full path: " + filePath);
+
+            boolean success = Utils.writeFileContent(filePath, doc.getContent());
+
+            if (success) {
+                doc.markSaved();
+                Protocol.log("SUCCESS: Doküman kaydedildi: " + diskFileName + " (" + doc.getContent().length() + " karakter)");
+            } else {
+                Protocol.log("ERROR: Dosya yazma başarısız: " + filePath);
+            }
+
+            return success;
 
         } catch (Exception e) {
             Protocol.logError("Kaydetme hatası: " + fileId, e);
@@ -740,19 +832,26 @@ public class DocumentManager {
             Protocol.log("Auto-save: " + savedCount + " dosya kaydedildi");
         }
     }
+
     /**
-     * DocumentManager'a eklenecek test dosyası oluşturma metodu
+     * 🔧 UPDATED: Test dosyası oluşturma - yeni formatla
      */
     public void createTestFileIfNeeded(String fileId) {
         try {
-            String filePath = Protocol.DOCUMENTS_FOLDER + fileId + Protocol.FILE_EXTENSION;
+            Protocol.log("DEBUG: Test dosyası kontrol ediliyor - fileId: " + fileId);
+
+            // 🔧 NEW FORMAT: Test Document - fileId.txt
+            String testFileName = "Test Document";
+            String diskFileName = testFileName + " - " + fileId + ".txt";
+            String filePath = Protocol.DOCUMENTS_FOLDER + diskFileName;
             Path path = Paths.get(filePath);
 
-            Protocol.log("DEBUG: Test dosyası kontrol ediliyor: " + filePath);
+            Protocol.log("DEBUG: Test dosya yolu: " + filePath);
 
             if (!Files.exists(path)) {
                 // Test içeriği oluştur
                 String testContent = "Bu bir test dosyasıdır.\n" +
+                        "Dosya Adı: " + testFileName + "\n" +
                         "Dosya ID: " + fileId + "\n" +
                         "Oluşturulma tarihi: " + new java.util.Date() + "\n" +
                         "\nBu dosyayı düzenleyebilirsiniz.";
@@ -765,10 +864,10 @@ public class DocumentManager {
                 // Dosyayı oluştur
                 Files.write(path, testContent.getBytes("UTF-8"));
 
-                Protocol.log("DEBUG: Test dosyası oluşturuldu: " + filePath);
+                Protocol.log("SUCCESS: Test dosyası oluşturuldu: " + diskFileName);
                 Protocol.log("DEBUG: Dosya boyutu: " + Files.size(path) + " bytes");
             } else {
-                Protocol.log("DEBUG: Dosya zaten mevcut: " + filePath);
+                Protocol.log("DEBUG: Test dosyası zaten mevcut: " + diskFileName);
                 Protocol.log("DEBUG: Mevcut dosya boyutu: " + Files.size(path) + " bytes");
             }
 
@@ -778,8 +877,7 @@ public class DocumentManager {
     }
 
     /**
-     * DocumentManager'a eklenecek debug metodu
-     * Tüm dokümanları listele metodunu güncelleyin
+     * 🔧 UPDATED: Tüm dokümanları listele - yeni dosya formatına uygun
      */
     public List<DocumentInfo> getAllDocuments() {
         List<DocumentInfo> result = new ArrayList<>();
@@ -816,19 +914,24 @@ public class DocumentManager {
             Protocol.log("DEBUG: Memory'den eklendi: " + info.fileId + " -> " + info.fileName);
         }
 
-        // Diskdeki dokümanlar (memory'de olmayan)
+        // 🔧 UPDATED: Diskdeki dokümanlar - yeni format (fileName - fileId.txt)
         try {
-            Protocol.log("DEBUG: Disk dosyaları taranıyor...");
+            Protocol.log("DEBUG: Disk dosyaları taranıyor (yeni format)...");
             Files.list(Paths.get(Protocol.DOCUMENTS_FOLDER))
                     .filter(Files::isRegularFile)
-                    .filter(path -> path.toString().endsWith(Protocol.FILE_EXTENSION))
+                    .filter(path -> path.toString().endsWith(".txt"))
+                    .filter(path -> path.getFileName().toString().contains(" - file_")) // New format pattern
                     .forEach(path -> {
-                        String fileName = path.getFileName().toString();
-                        String fileId = fileName.replace(Protocol.FILE_EXTENSION, "");
+                        String diskFileName = path.getFileName().toString();
+                        Protocol.log("DEBUG: Disk dosyası bulundu: " + diskFileName);
 
-                        Protocol.log("DEBUG: Disk dosyası bulundu: " + fileName + " (ID: " + fileId + ")");
+                        // fileName - fileId.txt formatından fileId'yi çıkar
+                        String fileId = extractFileIdFromDiskName(diskFileName);
+                        String fileName = extractFileNameFromDiskName(diskFileName, fileId);
 
-                        if (!documents.containsKey(fileId)) {
+                        Protocol.log("DEBUG: Extracted - fileId: '" + fileId + "', fileName: '" + fileName + "'");
+
+                        if (fileId != null && fileName != null && !documents.containsKey(fileId)) {
                             try {
                                 long lastModified = Files.getLastModifiedTime(path).toMillis();
                                 long fileSize = Files.size(path);
@@ -837,10 +940,12 @@ public class DocumentManager {
                                 result.add(info);
                                 Protocol.log("DEBUG: Disk'ten listeye eklendi: " + fileId + " -> " + fileName);
                             } catch (IOException e) {
-                                Protocol.logError("DEBUG: Dosya bilgisi okunamadı: " + fileName, e);
+                                Protocol.logError("DEBUG: Dosya bilgisi okunamadı: " + diskFileName, e);
                             }
-                        } else {
+                        } else if (documents.containsKey(fileId)) {
                             Protocol.log("DEBUG: Dosya zaten memory'de var, skip: " + fileId);
+                        } else {
+                            Protocol.log("DEBUG: FileId veya fileName çıkarılamadı: " + diskFileName);
                         }
                     });
         } catch (IOException e) {
@@ -856,6 +961,54 @@ public class DocumentManager {
         }
 
         return result;
+    }
+
+    /**
+     * 🔧 NEW: Disk dosya adından fileId çıkar
+     * "My Document - file_123456.txt" -> "file_123456"
+     */
+    private String extractFileIdFromDiskName(String diskFileName) {
+        try {
+            // .txt uzantısını kaldır
+            String nameWithoutExt = diskFileName.replace(".txt", "");
+
+            // " - file_" pattern'ini ara
+            int lastDashIndex = nameWithoutExt.lastIndexOf(" - file_");
+            if (lastDashIndex == -1) {
+                return null;
+            }
+
+            // FileId kısmını al
+            String fileId = nameWithoutExt.substring(lastDashIndex + 3); // " - " = 3 karakter
+            return fileId.trim();
+
+        } catch (Exception e) {
+            Protocol.log("DEBUG: FileId çıkarma hatası: " + diskFileName + " - " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 🔧 NEW: Disk dosya adından fileName çıkar
+     * "My Document - file_123456.txt" -> "My Document"
+     */
+    private String extractFileNameFromDiskName(String diskFileName, String fileId) {
+        try {
+            if (fileId == null) return null;
+
+            // Pattern: " - fileId.txt"
+            String pattern = " - " + fileId + ".txt";
+
+            if (diskFileName.endsWith(pattern)) {
+                return diskFileName.substring(0, diskFileName.length() - pattern.length());
+            }
+
+            return null;
+
+        } catch (Exception e) {
+            Protocol.log("DEBUG: FileName çıkarma hatası: " + diskFileName + " - " + e.getMessage());
+            return null;
+        }
     }
 
     // === USER MANAGEMENT ===
@@ -1014,5 +1167,16 @@ public class DocumentManager {
         public long getLastModified() { return lastModified; }
         public long getCreatedTime() { return createdTime; }
         public boolean isDirty() { return dirty; }
+
+        /**
+         * 🔧 UPDATED: Disk dosya adı - yeni format
+         */
+        public String getDiskFileName() {
+            return fileName + " - " + fileId + ".txt";
+        }
+
+        public String getDisplayInfo() {
+            return "📄 " + fileName + " (Modified: " + new java.util.Date(lastModified) + ")";
+        }
     }
 }

@@ -433,98 +433,8 @@ public class Server {
                 hours, minutes % 60, seconds % 60);
     }
 
-    /**
-     * Server health check
-     */
-    public boolean isHealthy() {
-        return isRunning &&
-                !serverSocket.isClosed() &&
-                documentManager != null &&
-                userManager != null;
-    }
 
-    // === ADMIN COMMANDS ===
 
-    /**
-     * Server konsol komutları
-     */
-    public void handleConsoleCommand(String command) {
-        if (command == null || command.trim().isEmpty()) {
-            return;
-        }
-
-        String[] parts = command.trim().split("\\s+");
-        String cmd = parts[0].toLowerCase();
-
-        switch (cmd) {
-            case "stats":
-            case "status":
-                System.out.println(getServerStats());
-                break;
-
-            case "users":
-                List<String> activeUsers = getActiveUsernames();
-                System.out.println("Aktif kullanıcılar (" + activeUsers.size() + "):");
-                for (String username : activeUsers) {
-                    System.out.println("  - " + username);
-                }
-                break;
-
-            case "files":
-                List<DocumentManager.DocumentInfo> docs = documentManager.getAllDocuments();
-                System.out.println("Dosyalar (" + docs.size() + "):");
-                for (DocumentManager.DocumentInfo doc : docs) {
-                    System.out.println("  - " + doc.getFileName() + " (" + doc.getUserCount() + " kullanıcı)");
-                }
-                break;
-
-            case "announce":
-                if (parts.length > 1) {
-                    String announcement = String.join(" ", Arrays.copyOfRange(parts, 1, parts.length));
-                    broadcastAnnouncement(announcement);
-                } else {
-                    System.out.println("Kullanım: announce <mesaj>");
-                }
-                break;
-
-            case "kick":
-                if (parts.length > 1) {
-                    String username = parts[1];
-                    String reason = parts.length > 2 ?
-                            String.join(" ", Arrays.copyOfRange(parts, 2, parts.length)) : "Admin tarafından çıkarıldı";
-
-                    if (kickUser(username, reason)) {
-                        System.out.println("Kullanıcı çıkarıldı: " + username);
-                    } else {
-                        System.out.println("Kullanıcı bulunamadı: " + username);
-                    }
-                } else {
-                    System.out.println("Kullanım: kick <kullanıcı_adı> [sebep]");
-                }
-                break;
-
-            case "help":
-                System.out.println("Mevcut komutlar:");
-                System.out.println("  stats/status - Server istatistikleri");
-                System.out.println("  users - Aktif kullanıcılar");
-                System.out.println("  files - Dosya listesi");
-                System.out.println("  announce <mesaj> - Duyuru gönder");
-                System.out.println("  kick <kullanıcı> [sebep] - Kullanıcıyı çıkar");
-                System.out.println("  help - Bu yardım");
-                System.out.println("  quit/exit - Server'ı durdur");
-                break;
-
-            case "quit":
-            case "exit":
-                System.out.println("Server durduruluyor...");
-                stop();
-                break;
-
-            default:
-                System.out.println("Bilinmeyen komut: " + cmd + " (help yazın)");
-                break;
-        }
-    }
 
     // === SHUTDOWN ===
 
@@ -639,9 +549,6 @@ public class Server {
                 try {
                     System.out.print("server> ");
                     String command = scanner.nextLine();
-                    if (command != null) {
-                        server.handleConsoleCommand(command);
-                    }
                 } catch (Exception e) {
                     // Console hatası - devam et
                 }
