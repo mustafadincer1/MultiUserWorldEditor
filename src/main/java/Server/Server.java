@@ -192,7 +192,7 @@ public class Server {
     private void sendWelcomeMessage(ClientHandler clientHandler) {
         try {
             String welcomeText = String.format(
-                    "Hoş geldiniz! Server: %s v%s | Aktif kullanıcı: %d | Toplam dosya: %d",
+                    "Hos geldiniz! Server: %s v%s | Aktif kullanici: %d | Toplam dosya: %d",
                     Protocol.PROJECT_NAME,
                     Protocol.VERSION,
                     connectedClients.size(),
@@ -200,7 +200,7 @@ public class Server {
             );
 
             // Sistem mesajı olarak gönder
-            Message welcomeMsg = new Message(Message.MessageType.ERROR, null, null)
+            Message welcomeMsg = new Message(Message.MessageType.LOGIN, null, null)
                     .addData("message", welcomeText);
             clientHandler.sendMessage(welcomeMsg);
 
