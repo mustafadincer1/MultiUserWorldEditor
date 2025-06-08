@@ -237,6 +237,9 @@ public class ClientHandler implements Runnable {
                 case SAVE:
                     handleSave(message);
                     break;
+                case FILE_DELETE:
+                    handleFileDelete(message);
+                    break;
                 default:
                     sendError("Desteklenmeyen mesaj tipi: " + message.getType());
                     break;
@@ -504,10 +507,102 @@ public class ClientHandler implements Runnable {
             sendError("Dosya açma hatası: " + e.getMessage());
         }
     }
+    private void handleFileDelete(Message message) {
+        if (!checkAuthenticated()) return;
+
+        String fileId = message.getFileId();
+        Protocol.log("DEBUG: handleFileDelete - fileId: '" + fileId + "', userId: '" + userId + "'");
+
+        if (fileId == null || fileId.trim().isEmpty()) {
+            Protocol.log("ERROR: handleFileDelete - fileId null veya boş");
+            sendError("Dosya ID geçersiz");
+            return;
+        }
+
+        try {
+            // FileId'yi temizle (client hatalarına karşı)
+            String cleanFileId = fileId.trim();
+            if (cleanFileId.contains(":")) {
+                String[] parts = cleanFileId.split(":");
+                if (parts.length >= 1) {
+                    cleanFileId = parts[0].trim();
+                    Protocol.log("DEBUG: Client hatası düzeltildi. Gerçek fileId: '" + cleanFileId + "'");
+                }
+            }
+
+            Protocol.log("DEBUG: İşlenecek silme fileId: '" + cleanFileId + "'");
+
+            // Dosyanın silinebilir olup olmadığını kontrol et
+            boolean canDelete = server.getDocumentManager().canDeleteDocument(cleanFileId, userId);
+            if (!canDelete) {
+                Protocol.log("WARNING: Dosya şu anda silinemiyor (muhtemelen çoklu kullanıcı var)");
+
+                Message response = Message.createFileDeleteAck(userId, cleanFileId, false,
+                        "Dosya şu anda kullanımda, silme işlemi yapılamaz");
+                sendMessage(response);
+                return;
+            }
+
+            // Eğer dosya açıksa önce kapat
+            if (openFiles.contains(cleanFileId)) {
+                server.getDocumentManager().closeDocument(cleanFileId, userId);
+                openFiles.remove(cleanFileId);
+                Protocol.log("DEBUG: Açık dosya kapatıldı: " + cleanFileId);
+            }
+
+            // Dosyayı sil
+            boolean deleted = server.getDocumentManager().deleteDocument(cleanFileId, userId);
+
+            if (deleted) {
+                // Başarılı silme response'u
+                Message response = Message.createFileDeleteAck(userId, cleanFileId, true,
+                        "Dosya başarıyla silindi");
+                sendMessage(response);
+
+                Protocol.log("SUCCESS: Dosya silindi: " + cleanFileId + " by " + getUserId());
+
+                // Diğer kullanıcılara dosya listesi güncellemesi broadcast et (opsiyonel)
+                // Böylece diğer kullanıcıların dosya listesi otomatik güncellenir
+                broadcastFileListUpdate();
+
+            } else {
+                Protocol.log("ERROR: DocumentManager.deleteDocument false döndü");
+
+                Message response = Message.createFileDeleteAck(userId, cleanFileId, false,
+                        "Dosya silinemedi - sunucu hatası");
+                sendMessage(response);
+            }
+
+        } catch (Exception e) {
+            Protocol.logError("ERROR: Dosya silme exception: " + getUserId(), e);
+
+            Message response = Message.createFileDeleteAck(userId, fileId, false,
+                    "Dosya silme hatası: " + e.getMessage());
+            sendMessage(response);
+        }
+    }
 
     /**
-     * TEXT_INSERT mesajını işle - SPACE CHARACTER FIX
+     * 🔧 NEW: Diğer kullanıcılara dosya listesi güncellemesi gönder
      */
+    private void broadcastFileListUpdate() {
+        try {
+            // Tüm bağlı kullanıcılara FILE_LIST_UPDATE mesajı gönder
+            Message updateMsg = new Message(Message.MessageType.FILE_LIST_RESP, null, null)
+                    .addData("update", "refresh");
+
+            server.broadcastToAll(updateMsg, userId);
+
+            Protocol.log("DEBUG: File list update broadcast gönderildi");
+
+        } catch (Exception e) {
+            Protocol.log("DEBUG: File list update broadcast hatası: " + e.getMessage());
+        }
+    }
+
+        /**
+         * TEXT_INSERT mesajını işle - SPACE CHARACTER FIX
+         */
     private void handleTextInsert(Message message) {
         if (!checkAuthenticated()) return;
 

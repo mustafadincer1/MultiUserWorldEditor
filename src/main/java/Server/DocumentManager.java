@@ -185,6 +185,153 @@ public class DocumentManager {
         return new InsertResult(success, appliedPosition, text);
     }
 
+    public synchronized boolean deleteDocument(String fileId, String requestingUserId) {
+        Protocol.log("=== DELETE DOCUMENT DEBUG ===");
+        Protocol.log("DEBUG: deleteDocument - fileId: '" + fileId + "', requestingUserId: '" + requestingUserId + "'");
+
+        if (fileId == null || fileId.trim().isEmpty()) {
+            Protocol.log("ERROR: FileId null veya boş");
+            return false;
+        }
+
+        if (requestingUserId == null || requestingUserId.trim().isEmpty()) {
+            Protocol.log("ERROR: RequestingUserId null veya boş");
+            return false;
+        }
+
+        try {
+            // 1. Memory'de döküman var mı kontrol et
+            Document doc = documents.get(fileId);
+            String fileName = null;
+
+            if (doc != null) {
+                fileName = doc.getFileName();
+
+                // 2. Döküman şu anda açık mı kontrol et
+                Set<String> users = fileUsers.get(fileId);
+                if (users != null && users.size() > 1) {
+                    Protocol.log("ERROR: Döküman şu anda " + users.size() + " kullanıcı tarafından kullanılıyor");
+                    return false;
+                }
+
+                Protocol.log("DEBUG: Memory'den döküman bulundu: " + fileName);
+            } else {
+                Protocol.log("DEBUG: Memory'de döküman yok, disk'ten fileName bulunmaya çalışılıyor");
+
+                // Memory'de yoksa disk'ten fileName'i bul
+                fileName = findFileNameFromDisk(fileId);
+                if (fileName == null) {
+                    Protocol.log("ERROR: Döküman disk'te de bulunamadı");
+                    return false;
+                }
+            }
+
+            // 4. Disk'ten dosyayı sil
+            boolean diskDeleted = deleteDocumentFromDisk(fileId, fileName);
+            if (!diskDeleted) {
+                Protocol.log("ERROR: Disk'ten dosya silinemedi");
+                return false;
+            }
+
+            // 5. Memory'den temizle
+            if (doc != null) {
+                documents.remove(fileId);
+                Protocol.log("DEBUG: Memory'den döküman kaldırıldı");
+            }
+
+            // 6. User mapping'lerini temizle
+            fileUsers.remove(fileId);
+            Protocol.log("DEBUG: File user mappings temizlendi");
+
+            Protocol.log("SUCCESS: Döküman başarıyla silindi: " + fileName + " (" + fileId + ") by " + requestingUserId);
+            Protocol.log("=== DELETE DOCUMENT END ===");
+            return true;
+
+        } catch (Exception e) {
+            Protocol.logError("ERROR: Döküman silme hatası: " + fileId, e);
+            return false;
+        }
+    }
+
+    /**
+     * 🔧 NEW: Disk'ten fileName bulma
+     */
+    private String findFileNameFromDisk(String fileId) {
+        try {
+            Path documentsDir = Paths.get(Protocol.DOCUMENTS_FOLDER);
+            if (!Files.exists(documentsDir)) {
+                return null;
+            }
+
+            String targetPattern = " - " + fileId + ".txt";
+
+            Path matchingFile = Files.list(documentsDir)
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(targetPattern))
+                    .findFirst()
+                    .orElse(null);
+
+            if (matchingFile != null) {
+                String diskFileName = matchingFile.getFileName().toString();
+                return extractOriginalFileName(diskFileName, fileId);
+            }
+
+            return null;
+
+        } catch (Exception e) {
+            Protocol.log("DEBUG: findFileNameFromDisk exception: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 🔧 NEW: Disk'ten dosya silme
+     */
+    private boolean deleteDocumentFromDisk(String fileId, String fileName) {
+        try {
+            // Disk dosya adını oluştur
+            String diskFileName = fileName + " - " + fileId + ".txt";
+            String filePath = Protocol.DOCUMENTS_FOLDER + diskFileName;
+
+            Protocol.log("DEBUG: Silinecek dosya yolu: " + filePath);
+
+            Path path = Paths.get(filePath);
+
+            if (!Files.exists(path)) {
+                Protocol.log("WARNING: Silinecek dosya disk'te bulunamadı: " + filePath);
+                return true; // Dosya zaten yok, başarılı sayalım
+            }
+
+            // Dosyayı sil
+            Files.delete(path);
+
+            Protocol.log("SUCCESS: Dosya disk'ten silindi: " + diskFileName);
+            return true;
+
+        } catch (Exception e) {
+            Protocol.logError("ERROR: Disk'ten dosya silme hatası: " + fileId, e);
+            return false;
+        }
+    }
+
+    /**
+     * 🔧 NEW: Dökümanın silinebilir olup olmadığını kontrol et
+     * UPDATED: Owner check kaldırıldı - herkes silebilir
+     */
+    public boolean canDeleteDocument(String fileId, String requestingUserId) {
+        Document doc = documents.get(fileId);
+
+        if (doc == null) {
+            // Memory'de yok, disk'te var mı?
+            String fileName = findFileNameFromDisk(fileId);
+            return fileName != null;
+        }
+
+        // Aktif kullanıcı kontrolü - sadece 1'den fazla kullanıcı varsa silme yapılamaz
+        Set<String> users = fileUsers.get(fileId);
+        return users == null || users.size() <= 1;
+    }
+
     private void createDocumentsDirectory() {
         try {
             Path documentsPath = Paths.get(Protocol.DOCUMENTS_FOLDER);

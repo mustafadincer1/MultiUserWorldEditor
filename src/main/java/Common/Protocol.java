@@ -42,6 +42,11 @@ public final class Protocol {
     public static final String ERROR_MAX_CONNECTIONS = "Maksimum bağlantı sayısına ulaşıldı";
     public static final String ERROR_GENERAL = "Genel hata oluştu";
 
+    public static final String ERROR_DELETE_FILE_IN_USE = "Dosya şu anda kullanımda, silinemez";
+    public static final String ERROR_DELETE_FILE_NOT_FOUND = "Silinecek dosya bulunamadı";
+    public static final String ERROR_DELETE_PERMISSION_DENIED = "Dosya silme yetkisi yok";
+    public static final String ERROR_DELETE_DISK_FAILURE = "Dosya disk'ten silinemedi";
+
     // === ID GENERATION ===
     private static final AtomicLong idCounter = new AtomicLong(1);
 
@@ -57,6 +62,39 @@ public final class Protocol {
      */
     public static String generateFileId() {
         return FILE_ID_PREFIX + System.currentTimeMillis() + "_" + idCounter.getAndIncrement();
+    }
+    public static boolean isValidFileIdForDeletion(String fileId) {
+        if (isNullOrEmpty(fileId)) {
+            return false;
+        }
+
+        String trimmed = fileId.trim();
+
+        // FileId pattern kontrolü: file_timestamp_counter
+        return trimmed.matches("^file_\\d+_\\d+$");
+    }
+
+    /**
+     * 🔧 NEW: Dosya silme operasyonunun güvenli olup olmadığını kontrol eder
+     */
+    public static boolean isSafeDeleteOperation(String fileId, String userId, int activeUserCount) {
+        // FileId validation
+        if (!isValidFileIdForDeletion(fileId)) {
+            return false;
+        }
+
+        // UserId validation
+        if (isNullOrEmpty(userId)) {
+            return false;
+        }
+
+        // Aktif kullanıcı sayısı 1'den fazla ise güvenli değil
+        if (activeUserCount > 1) {
+            log("WARNING: Delete operation not safe - " + activeUserCount + " active users on file: " + fileId);
+            return false;
+        }
+
+        return true;
     }
 
     // === VALIDATION METOTLARI ===

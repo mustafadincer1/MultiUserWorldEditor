@@ -17,6 +17,8 @@ public class Message {
         FILE_LIST, FILE_LIST_RESP, FILE_CREATE, FILE_OPEN, FILE_CONTENT,
         // Metin düzenleme
         TEXT_INSERT, TEXT_DELETE, TEXT_UPDATE,
+
+        FILE_DELETE, FILE_DELETE_ACK,
         // Diğer
         SAVE, ERROR,
 
@@ -58,6 +60,18 @@ public class Message {
     }
     public Map<String, String> getAllData() {
         return data != null ? new HashMap<>(data) : new HashMap<>();
+    }
+    public static Message createFileDelete(String userId, String fileId) {
+        return new Message(MessageType.FILE_DELETE, userId, fileId);
+    }
+
+    /**
+     * FILE_DELETE_ACK mesajı oluştur
+     */
+    public static Message createFileDeleteAck(String userId, String fileId, boolean success, String message) {
+        return new Message(MessageType.FILE_DELETE_ACK, userId, fileId)
+                .addData("status", success ? "success" : "fail")
+                .addData("message", message);
     }
 
     public Message addData(String key, int value) {
