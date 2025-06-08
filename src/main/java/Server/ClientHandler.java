@@ -328,9 +328,6 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    /**
-     * FILE_OPEN mesajını işle - client hatası için düzeltilmiş versiyon
-     */
     private void handleFileOpen(Message message) {
         if (!checkAuthenticated()) return;
 
@@ -355,27 +352,37 @@ public class ClientHandler implements Runnable {
                 }
             }
 
-            // FileId'yi temizle - Windows path sorunlarını önle
-            String cleanFileId = Utils.sanitizeFileName(actualFileId.trim());
+            // ❌ BU SATIRI KALDIR - FileId için sanitize gerekli değil
+            // String cleanFileId = Utils.sanitizeFileName(actualFileId.trim());
+
+            // ✅ BU ŞEKILDE DEĞİŞTİR - Sadece trim yap
+            String cleanFileId = actualFileId.trim();
+
             if (cleanFileId == null || cleanFileId.isEmpty()) {
-                Protocol.log("ERROR: sanitizeFileName başarısız - input: '" + actualFileId + "'");
+                Protocol.log("ERROR: cleanFileId boş - input: '" + actualFileId + "'");
                 sendError("Geçersiz dosya ID: " + fileId);
                 return;
             }
 
             Protocol.log("DEBUG: İşlenecek dosya ID: '" + cleanFileId + "'");
 
+            // ====== CRITICAL DEBUG EKLE ======
+            Protocol.log("=== FILE_OPEN DEBUG ===");
+            Protocol.log("DEBUG: Before adding to openFiles - userId: " + userId);
+            Protocol.log("DEBUG: cleanFileId: '" + cleanFileId + "'");
+            Protocol.log("DEBUG: openFiles before: " + openFiles);
+
             // DocumentManager'dan openDocument çağır
-            Protocol.log("DEBUG: DocumentManager.openDocument çağrılıyor...");
             DocumentManager.Document doc = server.getDocumentManager().openDocument(cleanFileId, userId);
 
             if (doc != null) {
-                Protocol.log("DEBUG: Dosya başarıyla yüklendi: " + doc.getFileName());
-                Protocol.log("DEBUG: İçerik uzunluğu: " + doc.getContent().length());
-
                 // Dosyayı açık listesine ekle
                 openFiles.add(cleanFileId);
-                Protocol.log("DEBUG: Dosya açık listesine eklendi");
+
+                Protocol.log("DEBUG: openFiles after: " + openFiles);
+                Protocol.log("DEBUG: openFiles.contains(cleanFileId): " + openFiles.contains(cleanFileId));
+                Protocol.log("DEBUG: openFiles size: " + openFiles.size());
+                Protocol.log("======================");
 
                 // Dosya içeriğini gönder
                 List<String> currentUsers = server.getDocumentManager().getFileUsers(cleanFileId);
@@ -386,8 +393,6 @@ public class ClientHandler implements Runnable {
                         .addData("filename", doc.getFileName());
 
                 sendMessage(response);
-                Protocol.log("DEBUG: FILE_CONTENT response gönderildi");
-
                 Protocol.log("SUCCESS: Dosya başarıyla açıldı: " + doc.getFileName() + " by " + getUserId());
 
             } else {
@@ -408,6 +413,15 @@ public class ClientHandler implements Runnable {
         if (!checkAuthenticated()) return;
 
         String fileId = message.getFileId();
+
+        // ====== CRITICAL DEBUG ======
+        Protocol.log("=== TEXT_INSERT DEBUG ===");
+        Protocol.log("DEBUG: handleTextInsert - userId: " + userId);
+        Protocol.log("DEBUG: handleTextInsert - fileId: '" + fileId + "'");
+        Protocol.log("DEBUG: openFiles contents: " + openFiles);
+        Protocol.log("DEBUG: openFiles.contains(fileId): " + openFiles.contains(fileId));
+        Protocol.log("========================");
+
         if (!isFileOpen(fileId)) {
             sendError("Dosya açık değil");
             return;

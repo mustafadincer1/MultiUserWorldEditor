@@ -300,38 +300,64 @@ public class DocumentManager {
      * Text insert - Robust OT ile çakışma çözümü
      */
     public synchronized boolean insertText(String fileId, int position, String text, String userId) {
+        Protocol.log("=== INSERT TEXT DEBUG ===");
+        Protocol.log("DEBUG: insertText - fileId: " + fileId + ", position: " + position +
+                ", text: '" + text + "', userId: " + userId);
+
         Document doc = documents.get(fileId);
         if (doc == null || text == null || text.isEmpty()) {
+            Protocol.log("ERROR: Document null or text invalid - doc: " + (doc != null) +
+                    ", text: " + (text != null ? "'" + text + "'" : "null"));
             return false;
         }
 
         // Position validation ve auto-fix
         String currentContent = doc.getContent();
+        Protocol.log("DEBUG: Current content length: " + currentContent.length());
+        Protocol.log("DEBUG: Original position: " + position);
+
         if (position < 0) position = 0;
         if (position > currentContent.length()) position = currentContent.length();
 
+        Protocol.log("DEBUG: Fixed position: " + position);
+
         // Yeni operasyon oluştur
         OperationalTransform.Operation newOp = OperationalTransform.createInsert(position, text, userId);
+        Protocol.log("DEBUG: Created operation: " + newOp);
 
         // Son operasyonlara karşı transform et
         List<OperationalTransform.Operation> recentOps = doc.getRecentOperations(20);
+        Protocol.log("DEBUG: Recent operations count: " + recentOps.size());
+
         List<OperationalTransform.Operation> transformedOps =
                 OperationalTransform.transformOperationList(newOp, recentOps);
+        Protocol.log("DEBUG: Transformed operations count: " + transformedOps.size());
 
         // Transform edilmiş operasyonları uygula
         boolean success = false;
         for (OperationalTransform.Operation transformedOp : transformedOps) {
+            Protocol.log("DEBUG: Checking transformed op: " + transformedOp);
+            Protocol.log("DEBUG: isValidOperation: " +
+                    OperationalTransform.isValidOperation(transformedOp, doc.getContent()));
+
             if (OperationalTransform.isValidOperation(transformedOp, doc.getContent())) {
+                String oldContent = doc.getContent();
                 String newContent = OperationalTransform.applyOperation(doc.getContent(), transformedOp);
                 doc.setContent(newContent);
                 doc.addOperation(transformedOp);
                 success = true;
 
-                Protocol.log(String.format("Insert uygulandı: %s pos:%d->%d text:'%s'",
+                Protocol.log(String.format("SUCCESS: Insert applied - %s pos:%d->%d text:'%s'",
                         fileId, position, transformedOp.position, transformedOp.content));
+                Protocol.log("DEBUG: Content changed from length " + oldContent.length() +
+                        " to " + newContent.length());
+            } else {
+                Protocol.log("WARNING: Invalid transformed operation: " + transformedOp);
             }
         }
 
+        Protocol.log("DEBUG: Final success: " + success);
+        Protocol.log("========================");
         return success;
     }
 

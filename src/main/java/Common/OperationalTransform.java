@@ -276,23 +276,22 @@ public class OperationalTransform {
         return result;
     }
 
-    /**
-     * Operasyonu text'e uygula
-     */
     public static String applyOperation(String text, Operation op) {
         if (text == null) text = "";
 
         try {
             if (op.isInsert()) {
-                // INSERT
-                if (op.position < 0 || op.position > text.length()) {
-                    Protocol.log("Invalid INSERT position: " + op.position + " text length: " + text.length());
-                    return text;
+                // INSERT - position auto-fix
+                int safePosition = Math.max(0, Math.min(op.position, text.length()));
+
+                if (safePosition != op.position) {
+                    Protocol.log("DEBUG: INSERT position auto-fixed: " + op.position + " → " + safePosition);
                 }
-                return text.substring(0, op.position) + op.content + text.substring(op.position);
+
+                return text.substring(0, safePosition) + op.content + text.substring(safePosition);
 
             } else {
-                // DELETE
+                // DELETE - mevcut kontrol doğru
                 if (op.position < 0 || op.position + op.length > text.length() || op.length <= 0) {
                     Protocol.log("Invalid DELETE: pos=" + op.position + " len=" + op.length + " text length=" + text.length());
                     return text;
@@ -340,7 +339,7 @@ public class OperationalTransform {
     }
 
     /**
-     * Operasyon validation
+     * Operasyon validation - DÜZELTME
      */
     public static boolean isValidOperation(Operation op, String currentText) {
         if (op == null || currentText == null) {
@@ -348,11 +347,33 @@ public class OperationalTransform {
         }
 
         if (op.isInsert()) {
-            return op.position >= 0 && op.position <= currentText.length() &&
-                    op.content != null && op.length == op.content.length();
+            // INSERT için pozisyon text uzunluğundan büyük olabilir (append işlemi)
+            // Sadece negatif olmadığını kontrol et
+            boolean valid = op.position >= 0 &&
+                    op.content != null &&
+                    op.length == op.content.length();
+
+            // DEBUG için log ekle
+            if (!valid) {
+                Protocol.log("DEBUG: INSERT validation failed - pos: " + op.position +
+                        ", content: " + (op.content != null ? "'" + op.content + "'" : "null") +
+                        ", text length: " + currentText.length());
+            }
+
+            return valid;
         } else {
-            return op.position >= 0 && op.position + op.length <= currentText.length() &&
+            // DELETE için mevcut kontrol doğru
+            boolean valid = op.position >= 0 &&
+                    op.position + op.length <= currentText.length() &&
                     op.length > 0;
+
+            if (!valid) {
+                Protocol.log("DEBUG: DELETE validation failed - pos: " + op.position +
+                        ", length: " + op.length +
+                        ", text length: " + currentText.length());
+            }
+
+            return valid;
         }
     }
 
