@@ -108,29 +108,28 @@ public class ClientHandler implements Runnable {
      */
     private void processMessage(String rawMessage) {
         try {
-            System.out.println("🔧 RAW MESSAGE: '" + rawMessage + "'");
+            System.out.println("RAW MESSAGE: '" + rawMessage + "'");
 
-            // 🔧 ENHANCED NEWLINE-AWARE MESSAGE PREPROCESSING
+            //  ENHANCED NEWLINE-AWARE MESSAGE PREPROCESSING
             if (rawMessage != null && rawMessage.contains("\n")) {
                 long newlineCount = rawMessage.chars().filter(ch -> ch == '\n').count();
                 boolean endsWithNewline = rawMessage.endsWith("\n");
 
-                System.out.println("⚠️ MESSAGE CONTAINS " + newlineCount + " NEWLINES, ends with newline: " + endsWithNewline);
 
-                // 🔧 SPECIAL HANDLING FOR __NEWLINE__ ENCODED MESSAGES
+
                 if (rawMessage.contains("__NEWLINE__")) {
-                    System.out.println("🔧 SPECIAL: __NEWLINE__ encoded message detected");
+
 
                     // Ensure proper message termination for __NEWLINE__ messages
                     if (!endsWithNewline) {
                         rawMessage += "\n";
-                        System.out.println("🔧 FIXED: Added missing message terminator");
+                        System.out.println(" FIXED: Added missing message terminator");
                     }
 
                     // Remove any embedded newlines that aren't the message terminator
                     String[] lines = rawMessage.split("\n");
                     if (lines.length > 2) { // More than expected (message + empty terminator)
-                        System.out.println("🔧 FIXING: Multiple newlines detected, fixing...");
+                        System.out.println(" FIXING: Multiple newlines detected, fixing...");
                         StringBuilder fixed = new StringBuilder();
                         for (int i = 0; i < lines.length - 1; i++) {
                             if (i > 0) fixed.append("\\n"); // Escape internal newlines
@@ -138,12 +137,12 @@ public class ClientHandler implements Runnable {
                         }
                         fixed.append("\n"); // Add proper terminator
                         rawMessage = fixed.toString();
-                        System.out.println("🔧 FIXED MESSAGE: '" + rawMessage + "'");
+                        System.out.println(" FIXED MESSAGE: '" + rawMessage + "'");
                     }
                 }
             }
 
-            // 🔧 ENHANCED MESSAGE VALIDATION
+
             if (rawMessage == null || rawMessage.trim().isEmpty()) {
                 System.err.println("ERROR: Empty message received");
                 return;
@@ -155,7 +154,6 @@ public class ClientHandler implements Runnable {
                 cleanMessage = cleanMessage.substring(0, cleanMessage.length() - 1);
             }
 
-            // 🔧 ENHANCED PIPE COUNT VALIDATION
             String[] preliminaryParts = cleanMessage.split("\\|");
             System.out.println("DEBUG: Message parts count: " + preliminaryParts.length);
 
@@ -163,7 +161,6 @@ public class ClientHandler implements Runnable {
                 System.err.println("ERROR: Invalid message format - expected 5 parts, got " +
                         preliminaryParts.length + " in: '" + cleanMessage + "'");
 
-                // 🔧 SPECIAL DEBUGGING FOR __NEWLINE__ MESSAGES
                 if (cleanMessage.contains("__NEWLINE__")) {
                     System.err.println("SPECIAL DEBUG: __NEWLINE__ message parsing failed");
                     System.err.println("DEBUG: Raw message bytes: " + java.util.Arrays.toString(rawMessage.getBytes()));
@@ -183,7 +180,6 @@ public class ClientHandler implements Runnable {
                 }
 
                 if (preliminaryParts.length < 5) {
-                    // Still invalid - send error
                     Message errorMsg = Message.createError(userId, "Geçersiz mesaj formatı: " + preliminaryParts.length + " parça");
                     sendMessage(errorMsg);
                     return;
@@ -199,7 +195,7 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            // 🔧 SPECIAL DEBUG FOR __NEWLINE__ MESSAGES
+            //  SPECIAL DEBUG FOR __NEWLINE__ MESSAGES
             if (message.getType() == Message.MessageType.TEXT_INSERT) {
                 String textData = message.getData("text");
                 if ("__NEWLINE__".equals(textData)) {
@@ -356,12 +352,12 @@ public class ClientHandler implements Runnable {
 
             Protocol.log("DEBUG: handleFileList - Bulunan dosya sayısı: " + files.size());
 
-            // GÜVENLI FORMAT: Pipe (|) separator kullan
+
             StringBuilder fileListData = new StringBuilder();
 
             for (int i = 0; i < files.size(); i++) {
                 DocumentManager.DocumentInfo file = files.get(i);
-                if (i > 0) fileListData.append("|");  // Virgül yerine pipe
+                if (i > 0) fileListData.append("|");
 
                 String fileEntry = file.getFileId() + ":" + file.getFileName() + ":" + file.getUserCount();
                 fileListData.append(fileEntry);
@@ -583,7 +579,7 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     * 🔧 NEW: Diğer kullanıcılara dosya listesi güncellemesi gönder
+     *  NEW: Diğer kullanıcılara dosya listesi güncellemesi gönder
      */
     private void broadcastFileListUpdate() {
         try {
@@ -622,7 +618,7 @@ public class ClientHandler implements Runnable {
             Integer position = message.getDataAsInt("position");
             String textValue = message.getData("text");
 
-            // 🔧 SPECIAL CHARACTERS MARKER DECODING
+            //  SPECIAL CHARACTERS MARKER DECODING
             String text;
             if ("__SPACE__".equals(textValue)) {
                 text = " ";
@@ -652,12 +648,12 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            // 🔧 USE NEW insertTextWithResult METHOD
+            //  USE NEW insertTextWithResult METHOD
             DocumentManager.InsertResult result = server.getDocumentManager()
                     .insertTextWithResult(fileId, position, text, userId);
 
             if (result.success) {
-                // 🔧 BROADCAST WITH ACTUAL APPLIED POSITION (NOT ORIGINAL)
+                //  BROADCAST WITH ACTUAL APPLIED POSITION (NOT ORIGINAL)
                 String broadcastText;
                 if (text.equals(" ")) {
                     broadcastText = "__SPACE__";
@@ -790,7 +786,7 @@ public class ClientHandler implements Runnable {
         try {
             String serialized = message.serialize();
 
-            // 🔧 FILE_CONTENT mesajları için özel debug
+            //  FILE_CONTENT mesajları için özel debug
             if (message.getType() == Message.MessageType.FILE_CONTENT) {
                 String content = message.getData("content");
                 if (content != null && (content.contains("\n") || content.contains("\r"))) {

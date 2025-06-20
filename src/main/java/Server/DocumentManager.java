@@ -29,14 +29,14 @@ public class DocumentManager {
      * Constructor - UPDATED: Debug bilgileri eklendi
      */
     public DocumentManager() {
-        // 🔧 NEW: Sistem bilgilerini logla
+        //  NEW: Sistem bilgilerini logla
         Protocol.logSystemInfo();
         Protocol.logCurrentWorkingDirectory();
 
         // Documents klasörü oluştur
         createDocumentsDirectory();
 
-        // 🔧 NEW: Documents klasörü durumunu kontrol et
+        //  NEW: Documents klasörü durumunu kontrol et
         Protocol.checkDocumentsFolder();
 
         // Auto-save her 30 saniyede bir
@@ -75,11 +75,11 @@ public class DocumentManager {
         Protocol.log("DEBUG: Current content length: " + currentContent.length());
         Protocol.log("DEBUG: Original position: " + originalPosition);
 
-        // 🔧 STRICT POSITION CLAMPING
+        //  STRICT POSITION CLAMPING
         int clampedPosition = Math.max(0, Math.min(position, currentContent.length()));
         Protocol.log("DEBUG: Clamped position: " + clampedPosition);
 
-        // 🔧 SPECIAL LOGGING FOR NEWLINE
+        //  SPECIAL LOGGING FOR NEWLINE
         if (text.equals("\n")) {
             Protocol.log("🔥 NEWLINE INSERT DETECTED - original pos: " + originalPosition +
                     ", clamped pos: " + clampedPosition);
@@ -89,7 +89,7 @@ public class DocumentManager {
         OperationalTransform.Operation newOp = OperationalTransform.createInsert(clampedPosition, text, userId);
         Protocol.log("DEBUG: Created operation: " + newOp);
 
-        // 🔧 SIGNIFICANTLY REDUCED TRANSFORM SCOPE for INSERT operations
+        //  SIGNIFICANTLY REDUCED TRANSFORM SCOPE for INSERT operations
         int maxHistoricalOps = text.equals("\n") ? 2 : 3; // Even fewer for NEWLINE
         List<OperationalTransform.Operation> recentOps = doc.getRecentOperations(maxHistoricalOps);
         Protocol.log("DEBUG: Recent operations count: " + recentOps.size() + " (max: " + maxHistoricalOps + ")");
@@ -105,27 +105,27 @@ public class DocumentManager {
         for (OperationalTransform.Operation transformedOp : transformedOps) {
             Protocol.log("DEBUG: Checking transformed op: " + transformedOp);
 
-            // 🔧 ENHANCED CONTENT-AWARE VALIDATION with aggressive position fixing
+            //  ENHANCED CONTENT-AWARE VALIDATION with aggressive position fixing
             String currentState = doc.getContent();
             int currentStateLength = currentState.length();
 
             Protocol.log("DEBUG: Content state - length: " + currentStateLength +
                     ", op position: " + transformedOp.position);
 
-            // 🔧 AGGRESSIVE AUTO-FIX FOR OUT-OF-BOUNDS OPERATIONS
+            //  AGGRESSIVE AUTO-FIX FOR OUT-OF-BOUNDS OPERATIONS
             OperationalTransform.Operation finalOp = transformedOp;
 
             if (transformedOp.position > currentStateLength) {
                 // Position beyond content - clamp to end
                 int newPos = currentStateLength;
-                // 🔧 FIXED: Use correct INSERT constructor (Type, position, content, userId)
+                //  FIXED: Use correct INSERT constructor (Type, position, content, userId)
                 finalOp = new OperationalTransform.Operation(OperationalTransform.Operation.Type.INSERT,
                         newPos, transformedOp.content, transformedOp.userId);
                 Protocol.log("DEBUG: Position auto-fixed: " + transformedOp.position + " → " + newPos);
 
             } else if (transformedOp.position < 0) {
                 // Negative position - clamp to start
-                // 🔧 FIXED: Use correct INSERT constructor (Type, position, content, userId)
+                //  FIXED: Use correct INSERT constructor (Type, position, content, userId)
                 finalOp = new OperationalTransform.Operation(OperationalTransform.Operation.Type.INSERT,
                         0, transformedOp.content, transformedOp.userId);
                 Protocol.log("DEBUG: Negative position fixed: " + transformedOp.position + " → 0");
@@ -149,7 +149,7 @@ public class DocumentManager {
                 Protocol.log("DEBUG: Content changed from length " + oldContent.length() +
                         " to " + newContent.length());
 
-                // 🔧 SPECIAL SUCCESS LOGGING FOR NEWLINE
+                //  SPECIAL SUCCESS LOGGING FOR NEWLINE
                 if (text.equals("\n")) {
                     Protocol.log("🎉 SERVER SUCCESS: NEWLINE CHARACTER INSERTED! 🎉");
                     Protocol.log("NEWLINE: " + fileId + " original pos:" + originalPosition +
@@ -161,7 +161,7 @@ public class DocumentManager {
                 Protocol.log("DEBUG: Operation failed validation - likely position out of bounds");
                 Protocol.log("DEBUG: Op position: " + finalOp.position + ", content length: " + currentStateLength);
 
-                // 🔧 LAST RESORT: Insert at end of content
+                //  LAST RESORT: Insert at end of content
                 if (currentStateLength >= 0) {
                     OperationalTransform.Operation fallbackOp =
                             OperationalTransform.createInsert(currentStateLength, text, userId);
@@ -254,7 +254,7 @@ public class DocumentManager {
     }
 
     /**
-     * 🔧 NEW: Disk'ten fileName bulma
+     *  NEW: Disk'ten fileName bulma
      */
     private String findFileNameFromDisk(String fileId) {
         try {
@@ -285,7 +285,7 @@ public class DocumentManager {
     }
 
     /**
-     * 🔧 NEW: Disk'ten dosya silme
+     *  NEW: Disk'ten dosya silme
      */
     private boolean deleteDocumentFromDisk(String fileId, String fileName) {
         try {
@@ -315,7 +315,7 @@ public class DocumentManager {
     }
 
     /**
-     * 🔧 NEW: Dökümanın silinebilir olup olmadığını kontrol et
+     *  NEW: Dökümanın silinebilir olup olmadığını kontrol et
      * UPDATED: Owner check kaldırıldı - herkes silebilir
      */
     public boolean canDeleteDocument(String fileId, String requestingUserId) {
@@ -356,16 +356,15 @@ public class DocumentManager {
         }
 
         try {
-            // Unique file ID
+          
             String fileId = Protocol.generateFileId();
-
-            // 🔧 UPDATED: Dosya uzantısı kontrolü kaldırıldı (artık fileName - fileId.txt formatında)
+            
             String cleanFileName = fileName;
 
-            // Yeni document
+         
             Document document = new Document(fileId, cleanFileName, creatorUserId);
 
-            // 🔧 NEW: Varsayılan içerik ekle
+            //  NEW: Varsayılan içerik ekle
             String defaultContent = ""; // Boş dosya olarak başlat
             document.setContent(defaultContent);
 
@@ -375,7 +374,7 @@ public class DocumentManager {
             // Kullanıcıyı ekle
             addUserToFile(fileId, creatorUserId);
 
-            // 🔧 NEW: Hemen disk'e kaydet
+            //  NEW: Hemen disk'e kaydet
             boolean saved = saveDocument(fileId);
             if (saved) {
                 Protocol.log("SUCCESS: Doküman oluşturuldu ve kaydedildi: " + cleanFileName + " (" + fileId + ") by " + creatorUserId);
@@ -487,7 +486,7 @@ public class DocumentManager {
     }
 
     /**
-     * 🔧 UPDATED: loadDocumentFromDisk metodunu yeni dosya formatına göre güncelle
+     *  UPDATED: loadDocumentFromDisk metodunu yeni dosya formatına göre güncelle
      */
     private Document loadDocumentFromDisk(String fileId) {
         Protocol.log("=== LOAD DOCUMENT FROM DISK DEBUG (UPDATED FORMAT) ===");
@@ -503,7 +502,7 @@ public class DocumentManager {
 
             Protocol.log("DEBUG: cleanFileId: '" + cleanFileId + "'");
 
-            // 🔧 UPDATED: Yeni formatda dosya arama - fileName - fileId.txt pattern'i
+            //  UPDATED: Yeni formatda dosya arama - fileName - fileId.txt pattern'i
             String documentsPath = Protocol.DOCUMENTS_FOLDER;
             Protocol.log("DEBUG: Documents klasörü: " + documentsPath);
 
@@ -600,7 +599,7 @@ public class DocumentManager {
             Protocol.log("DEBUG: İçerik (ilk 100 karakter): '" +
                     (content.length() > 100 ? content.substring(0, 100) + "..." : content) + "'");
 
-            // 🔧 UPDATED: Original fileName'i dosya adından çıkar
+            //  UPDATED: Original fileName'i dosya adından çıkar
             String originalFileName = extractOriginalFileName(matchingFileName, cleanFileId);
             Protocol.log("DEBUG: Çıkarılan original fileName: " + originalFileName);
 
@@ -619,7 +618,7 @@ public class DocumentManager {
     }
 
     /**
-     * 🔧 NEW: Dosya adından original fileName'i çıkar
+     *  NEW: Dosya adından original fileName'i çıkar
      */
     private String extractOriginalFileName(String diskFileName, String fileId) {
         // diskFileName: "My Document - file_123456.txt"
@@ -669,7 +668,7 @@ public class DocumentManager {
         Protocol.log("DEBUG: insertText - fileId: " + fileId + ", position: " + position +
                 ", text: '" + text + "', userId: " + userId);
 
-        // 🔧 SPACE CHARACTER DEBUG
+        //  SPACE CHARACTER DEBUG
         if (text != null) {
             Protocol.log("DEBUG: Text length: " + text.length());
             Protocol.log("DEBUG: Text isEmpty(): " + text.isEmpty());
@@ -684,7 +683,7 @@ public class DocumentManager {
 
         Document doc = documents.get(fileId);
 
-        // 🔧 VALIDATION DÜZELTMESİ - SPACE KARAKTERİ İÇİN
+        //  VALIDATION DÜZELTMESİ - SPACE KARAKTERİ İÇİN
         if (doc == null) {
             Protocol.log("ERROR: Document not found for fileId: " + fileId);
             return false;
@@ -734,7 +733,7 @@ public class DocumentManager {
         for (OperationalTransform.Operation transformedOp : transformedOps) {
             Protocol.log("DEBUG: Checking transformed op: " + transformedOp);
 
-            // 🔧 VALIDATION İÇİN ÖZEL SPACE DEBUG
+            //  VALIDATION İÇİN ÖZEL SPACE DEBUG
             boolean isValid = OperationalTransform.isValidOperation(transformedOp, doc.getContent());
             Protocol.log("DEBUG: isValidOperation: " + isValid);
 
@@ -801,7 +800,7 @@ public class DocumentManager {
         Protocol.log("DEBUG: Current content length: " + currentContent.length());
         Protocol.log("DEBUG: Original delete - pos: " + originalPosition + ", len: " + originalLength);
 
-        // 🔧 STRICT POSITION AND LENGTH CLAMPING
+        //  STRICT POSITION AND LENGTH CLAMPING
         if (currentContent.length() == 0) {
             Protocol.log("ERROR: No content to delete");
             return false;
@@ -822,7 +821,7 @@ public class DocumentManager {
         OperationalTransform.Operation newOp = OperationalTransform.createDelete(clampedPosition, clampedLength, userId);
         Protocol.log("DEBUG: Created operation: " + newOp);
 
-        // 🔧 REDUCED TRANSFORM SCOPE for stability
+        //  REDUCED TRANSFORM SCOPE for stability
         List<OperationalTransform.Operation> recentOps = doc.getRecentOperations(3); // Significantly reduced
         Protocol.log("DEBUG: Recent operations count: " + recentOps.size());
 
@@ -835,7 +834,7 @@ public class DocumentManager {
         for (OperationalTransform.Operation transformedOp : transformedOps) {
             Protocol.log("DEBUG: Checking transformed op: " + transformedOp);
 
-            // 🔧 CONTENT-AWARE VALIDATION with auto-fix
+            //  CONTENT-AWARE VALIDATION with auto-fix
             String currentState = doc.getContent();
             int currentStateLength = currentState.length();
 
@@ -843,7 +842,7 @@ public class DocumentManager {
                     ", op position: " + transformedOp.position +
                     ", op length: " + transformedOp.length);
 
-            // 🔧 AUTO-FIX TRANSFORMED OPERATION if out of bounds
+            //  AUTO-FIX TRANSFORMED OPERATION if out of bounds
             OperationalTransform.Operation finalOp = transformedOp;
 
             if (transformedOp.position >= currentStateLength) {
@@ -923,7 +922,7 @@ public class DocumentManager {
     // === FILE MANAGEMENT ===
 
     /**
-     * 🔧 UPDATED: Dokümanı kaydet - fileName - fileId.txt formatında
+     *  UPDATED: Dokümanı kaydet - fileName - fileId.txt formatında
      */
     public boolean saveDocument(String fileId) {
         Document doc = documents.get(fileId);
@@ -933,7 +932,7 @@ public class DocumentManager {
         }
 
         try {
-            // 🔧 NEW FORMAT: fileName - fileId.txt
+            //  NEW FORMAT: fileName - fileId.txt
             String fileName = doc.getFileName();
             String diskFileName = fileName + " - " + fileId + ".txt";
             String filePath = Protocol.DOCUMENTS_FOLDER + diskFileName;
@@ -981,13 +980,13 @@ public class DocumentManager {
     }
 
     /**
-     * 🔧 UPDATED: Test dosyası oluşturma - yeni formatla
+     *  UPDATED: Test dosyası oluşturma - yeni formatla
      */
     public void createTestFileIfNeeded(String fileId) {
         try {
             Protocol.log("DEBUG: Test dosyası kontrol ediliyor - fileId: " + fileId);
 
-            // 🔧 NEW FORMAT: Test Document - fileId.txt
+            //  NEW FORMAT: Test Document - fileId.txt
             String testFileName = "Test Document";
             String diskFileName = testFileName + " - " + fileId + ".txt";
             String filePath = Protocol.DOCUMENTS_FOLDER + diskFileName;
@@ -1024,12 +1023,11 @@ public class DocumentManager {
     }
 
     /**
-     * 🔧 UPDATED: Tüm dokümanları listele - yeni dosya formatına uygun
+     *  UPDATED: Tüm dokümanları listele - yeni dosya formatına uygun
      */
     public List<DocumentInfo> getAllDocuments() {
         List<DocumentInfo> result = new ArrayList<>();
 
-        // DEBUGGING: Documents klasörünün mutlak yolunu yazdır
         String documentsPath = Protocol.DOCUMENTS_FOLDER;
         Protocol.log("DEBUG: Documents klasörü yolu: " + documentsPath);
 
@@ -1047,7 +1045,6 @@ public class DocumentManager {
             Protocol.logError("DEBUG: Klasör listeleme hatası", e);
         }
 
-        // Memory'deki dokümanlar
         Protocol.log("DEBUG: Memory'deki doküman sayısı: " + documents.size());
         for (Document doc : documents.values()) {
             DocumentInfo info = new DocumentInfo(
@@ -1061,7 +1058,6 @@ public class DocumentManager {
             Protocol.log("DEBUG: Memory'den eklendi: " + info.fileId + " -> " + info.fileName);
         }
 
-        // 🔧 UPDATED: Diskdeki dokümanlar - yeni format (fileName - fileId.txt)
         try {
             Protocol.log("DEBUG: Disk dosyaları taranıyor (yeni format)...");
             Files.list(Paths.get(Protocol.DOCUMENTS_FOLDER))
@@ -1072,7 +1068,6 @@ public class DocumentManager {
                         String diskFileName = path.getFileName().toString();
                         Protocol.log("DEBUG: Disk dosyası bulundu: " + diskFileName);
 
-                        // fileName - fileId.txt formatından fileId'yi çıkar
                         String fileId = extractFileIdFromDiskName(diskFileName);
                         String fileName = extractFileNameFromDiskName(diskFileName, fileId);
 
@@ -1099,7 +1094,6 @@ public class DocumentManager {
             Protocol.logError("DEBUG: Dosya listeleme hatası", e);
         }
 
-        // Son değişiklik tarihine göre sırala
         result.sort((a, b) -> Long.compare(b.lastModified, a.lastModified));
 
         Protocol.log("DEBUG: Toplam dosya sayısı döndürülüyor: " + result.size());
@@ -1111,7 +1105,7 @@ public class DocumentManager {
     }
 
     /**
-     * 🔧 NEW: Disk dosya adından fileId çıkar
+     *  NEW: Disk dosya adından fileId çıkar
      * "My Document - file_123456.txt" -> "file_123456"
      */
     private String extractFileIdFromDiskName(String diskFileName) {
@@ -1136,7 +1130,7 @@ public class DocumentManager {
     }
 
     /**
-     * 🔧 NEW: Disk dosya adından fileName çıkar
+     *  NEW: Disk dosya adından fileName çıkar
      * "My Document - file_123456.txt" -> "My Document"
      */
     private String extractFileNameFromDiskName(String diskFileName, String fileId) {
@@ -1269,7 +1263,7 @@ public class DocumentManager {
         }
 
         public List<OperationalTransform.Operation> getRecentOperations(int maxCount) {
-            // 🔧 FURTHER REDUCTION for stability
+            //  FURTHER REDUCTION for stability
             int actualMax = Math.min(maxCount, 2); // Never more than 2 operations
 
             if (operationHistory.size() <= actualMax) {
@@ -1316,7 +1310,7 @@ public class DocumentManager {
         public boolean isDirty() { return dirty; }
 
         /**
-         * 🔧 UPDATED: Disk dosya adı - yeni format
+         *  UPDATED: Disk dosya adı - yeni format
          */
         public String getDiskFileName() {
             return fileName + " - " + fileId + ".txt";

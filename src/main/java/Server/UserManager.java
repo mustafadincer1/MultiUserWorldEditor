@@ -59,7 +59,6 @@ public class UserManager {
             User newUser = new User(username, password.trim());
             users.put(username.toLowerCase(), newUser);
 
-            // Text dosyasına kaydet
             saveUsers();
 
             Protocol.log("Yeni kullanıcı kaydedildi: " + username);
@@ -99,7 +98,7 @@ public class UserManager {
         activeSessions.put(userId, username);
         user.lastLoginTime = System.currentTimeMillis();
 
-        // Text dosyasına kaydet (son giriş zamanı için)
+
         saveUsers();
 
         Protocol.log("Kullanıcı giriş yaptı: " + username + " (" + userId + ")");
