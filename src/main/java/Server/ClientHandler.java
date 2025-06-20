@@ -1,29 +1,23 @@
+// ClientHandler.java - WebSocket için TAMAMEN YENİDEN YAZ
 package Server;
 
 import Common.*;
-import java.io.*;
-import java.net.*;
+import org.java_websocket.WebSocket;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static Common.Utils.writeToSocket;
-
 /**
- * İstemci bağlantısını handle eden sınıf
+ * WebSocket tabanlı İstemci bağlantısını handle eden sınıf
  * Robust OT entegreli DocumentManager ve UserManager ile çalışır
  */
-public class ClientHandler implements Runnable {
+public class ClientHandler {
 
     // Temel bağlantı bilgileri
     private final Server server;
-    private final Socket clientSocket;
+    private final WebSocket webSocket;
     private String tempClientId;
     private String userId = null;
     private String username = null;
-
-    // Stream'ler
-    private BufferedReader reader;
-    private PrintWriter writer;
 
     // Durum yönetimi
     private final AtomicBoolean isConnected = new AtomicBoolean(true);
@@ -40,115 +34,69 @@ public class ClientHandler implements Runnable {
     /**
      * Constructor
      */
-    public ClientHandler(Server server, Socket clientSocket, String tempClientId) {
+    public ClientHandler(Server server, WebSocket webSocket, String tempClientId) {
         this.server = server;
-        this.clientSocket = clientSocket;
+        this.webSocket = webSocket;
         this.tempClientId = tempClientId;
         this.connectionTime = System.currentTimeMillis();
 
-        try {
-            // Input/Output stream'leri hazırla
-            this.reader = new BufferedReader(
-                    new InputStreamReader(clientSocket.getInputStream(), "UTF-8"));
-            this.writer = new PrintWriter(
-                    new OutputStreamWriter(clientSocket.getOutputStream(), "UTF-8"), true);
-
-            // Socket timeout
-            clientSocket.setSoTimeout(Protocol.CONNECTION_TIMEOUT);
-
-        } catch (IOException e) {
-            Protocol.logError("ClientHandler oluşturma hatası: " + tempClientId, e);
-            disconnect();
-        }
+        Protocol.log("WebSocket ClientHandler oluşturuldu: " + tempClientId);
     }
 
     /**
-     * Ana thread metodu - mesaj işleme loop'u
+     * WebSocket'ten gelen mesajı işle - Ana entry point
      */
-    @Override
-    public void run() {
-        Protocol.log("ClientHandler başlatıldı: " + tempClientId);
-
+    public void onMessage(String rawMessage) {
         try {
-            // Ana mesaj işleme loop'u
-            while (isConnected.get() && !clientSocket.isClosed()) {
-                try {
-                    // İstemciden mesaj oku
-                    String rawMessage = Utils.readFromSocket(clientSocket);
-
-                    if (rawMessage != null && !rawMessage.trim().isEmpty()) {
-                        messagesReceived++;
-                        processMessage(rawMessage);
-                    } else {
-                        // Null mesaj - bağlantı kopmuş olabilir
-                        break;
-                    }
-
-                } catch (SocketTimeoutException e) {
-                    // Timeout - heartbeat kontrolü (basit versiyon)
-                    if (isAuthenticated.get()) {
-                        // Heartbeat gönderebiliriz (opsiyonel)
-                    }
-
-                } catch (IOException e) {
-                    Protocol.log("İstemci bağlantı hatası: " + getUserId() + " - " + e.getMessage());
-                    break;
-                }
+            if (rawMessage != null && !rawMessage.trim().isEmpty()) {
+                messagesReceived++;
+                processMessage(rawMessage);
             }
-
         } catch (Exception e) {
-            Protocol.logError("ClientHandler beklenmeyen hata: " + getUserId(), e);
-        } finally {
-            disconnect();
+            Protocol.logError("WebSocket mesaj işleme hatası: " + getUserId(), e);
+            sendError("Mesaj işleme hatası: " + e.getMessage());
         }
     }
 
     /**
-     * Gelen mesajı parse eder ve işler
+     * Gelen mesajı parse eder ve işler - MEVCUT KODDAN AYNEN KOPYALA
      */
     private void processMessage(String rawMessage) {
         try {
             System.out.println("RAW MESSAGE: '" + rawMessage + "'");
 
-            //  ENHANCED NEWLINE-AWARE MESSAGE PREPROCESSING
+            // ENHANCED NEWLINE-AWARE MESSAGE PREPROCESSING - AYNEN KOPYALA
             if (rawMessage != null && rawMessage.contains("\n")) {
                 long newlineCount = rawMessage.chars().filter(ch -> ch == '\n').count();
                 boolean endsWithNewline = rawMessage.endsWith("\n");
 
-
-
                 if (rawMessage.contains("__NEWLINE__")) {
-
-
-                    // Ensure proper message termination for __NEWLINE__ messages
                     if (!endsWithNewline) {
                         rawMessage += "\n";
                         System.out.println(" FIXED: Added missing message terminator");
                     }
 
-                    // Remove any embedded newlines that aren't the message terminator
                     String[] lines = rawMessage.split("\n");
-                    if (lines.length > 2) { // More than expected (message + empty terminator)
+                    if (lines.length > 2) {
                         System.out.println(" FIXING: Multiple newlines detected, fixing...");
                         StringBuilder fixed = new StringBuilder();
                         for (int i = 0; i < lines.length - 1; i++) {
-                            if (i > 0) fixed.append("\\n"); // Escape internal newlines
+                            if (i > 0) fixed.append("\\n");
                             fixed.append(lines[i]);
                         }
-                        fixed.append("\n"); // Add proper terminator
+                        fixed.append("\n");
                         rawMessage = fixed.toString();
                         System.out.println(" FIXED MESSAGE: '" + rawMessage + "'");
                     }
                 }
             }
 
-
             if (rawMessage == null || rawMessage.trim().isEmpty()) {
                 System.err.println("ERROR: Empty message received");
                 return;
             }
 
-            // Clean message (remove trailing newlines for parsing)
+            // Clean message
             String cleanMessage = rawMessage.trim();
             if (cleanMessage.endsWith("\n")) {
                 cleanMessage = cleanMessage.substring(0, cleanMessage.length() - 1);
@@ -163,15 +111,11 @@ public class ClientHandler implements Runnable {
 
                 if (cleanMessage.contains("__NEWLINE__")) {
                     System.err.println("SPECIAL DEBUG: __NEWLINE__ message parsing failed");
-                    System.err.println("DEBUG: Raw message bytes: " + java.util.Arrays.toString(rawMessage.getBytes()));
 
-                    // Try to reconstruct the message
                     if (preliminaryParts.length == 4) {
-                        // Missing timestamp - add current timestamp
                         cleanMessage = cleanMessage + "|" + System.currentTimeMillis();
                         System.err.println("DEBUG: Reconstructed message: '" + cleanMessage + "'");
 
-                        // Retry parsing
                         preliminaryParts = cleanMessage.split("\\|");
                         if (preliminaryParts.length == 5) {
                             System.out.println("SUCCESS: Message reconstructed successfully");
@@ -195,7 +139,7 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            //  SPECIAL DEBUG FOR __NEWLINE__ MESSAGES
+            // SPECIAL DEBUG FOR __NEWLINE__ MESSAGES
             if (message.getType() == Message.MessageType.TEXT_INSERT) {
                 String textData = message.getData("text");
                 if ("__NEWLINE__".equals(textData)) {
@@ -254,7 +198,7 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    // === MESSAGE HANDLERS ===
+    // === MESSAGE HANDLERS - MEVCUT KODDAN AYNEN KOPYALA ===
 
     /**
      * REGISTER mesajını işle
@@ -305,16 +249,13 @@ public class ClientHandler implements Runnable {
         UserManager.LoginResult result = server.getUserManager().loginUser(username, password);
 
         if (result.success) {
-            // Başarılı giriş
             this.userId = result.userId;
             this.username = username;
             isAuthenticated.set(true);
 
-            // Server'a kaydet
             if (server.registerClient(userId, this)) {
                 Protocol.log("Kullanıcı giriş yaptı: " + username + " (" + userId + ")");
             } else {
-                // Server kayıt hatası - session'ı temizle
                 server.getUserManager().logoutUser(userId);
                 this.userId = null;
                 this.username = null;
@@ -341,7 +282,7 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     * FILE_LIST mesajını işle
+     * FILE_LIST mesajını işle - AYNEN KOPYALA
      */
     private void handleFileList(Message message) {
         if (!checkAuthenticated()) return;
@@ -351,7 +292,6 @@ public class ClientHandler implements Runnable {
                     server.getDocumentManager().getAllDocuments();
 
             Protocol.log("DEBUG: handleFileList - Bulunan dosya sayısı: " + files.size());
-
 
             StringBuilder fileListData = new StringBuilder();
 
@@ -381,15 +321,13 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     * FILE_CREATE mesajını işle
+     * FILE_CREATE mesajını işle - AYNEN KOPYALA
      */
     private void handleFileCreate(Message message) {
         if (!checkAuthenticated()) return;
 
         String fileName = message.getData("name");
-        Protocol.log("Gelen dosya adı: '" + fileName + "'");
-        Protocol.log("Dosya adı byte'ları: " + Arrays.toString(fileName.getBytes()));
-        Protocol.log("Validation sonucu: " + Protocol.isValidFilename(fileName));
+
         if (!Protocol.isValidFilename(fileName)) {
             sendError("Geçersiz dosya ismi");
             return;
@@ -399,10 +337,8 @@ public class ClientHandler implements Runnable {
             String fileId = server.getDocumentManager().createDocument(fileName, userId);
 
             if (fileId != null) {
-                // Dosyayı otomatik aç
                 openFiles.add(fileId);
 
-                // Başarılı oluşturma response'u
                 Message response = Message.createFileContent(userId, fileId, "")
                         .addData("name", fileName);
                 sendMessage(response);
@@ -419,6 +355,9 @@ public class ClientHandler implements Runnable {
         }
     }
 
+    /**
+     * FILE_OPEN mesajını işle - AYNEN KOPYALA
+     */
     private void handleFileOpen(Message message) {
         if (!checkAuthenticated()) return;
 
@@ -432,8 +371,6 @@ public class ClientHandler implements Runnable {
         }
 
         try {
-            // Client hatalı olarak "fileId:fileName:userCount" formatında gönderiyor
-            // Sadece fileId kısmını al
             String actualFileId = fileId;
             if (fileId.contains(":")) {
                 String[] parts = fileId.split(":");
@@ -443,10 +380,6 @@ public class ClientHandler implements Runnable {
                 }
             }
 
-            // ❌ BU SATIRI KALDIR - FileId için sanitize gerekli değil
-            // String cleanFileId = Utils.sanitizeFileName(actualFileId.trim());
-
-            // ✅ BU ŞEKILDE DEĞİŞTİR - Sadece trim yap
             String cleanFileId = actualFileId.trim();
 
             if (cleanFileId == null || cleanFileId.isEmpty()) {
@@ -457,34 +390,17 @@ public class ClientHandler implements Runnable {
 
             Protocol.log("DEBUG: İşlenecek dosya ID: '" + cleanFileId + "'");
 
-            // ====== CRITICAL DEBUG EKLE ======
-            Protocol.log("=== FILE_OPEN DEBUG ===");
-            Protocol.log("DEBUG: Before adding to openFiles - userId: " + userId);
-            Protocol.log("DEBUG: cleanFileId: '" + cleanFileId + "'");
-            Protocol.log("DEBUG: openFiles before: " + openFiles);
-
-            // DocumentManager'dan openDocument çağır
             DocumentManager.Document doc = server.getDocumentManager().openDocument(cleanFileId, userId);
 
             if (doc != null) {
-                // Dosyayı açık listesine ekle
                 openFiles.add(cleanFileId);
 
-                Protocol.log("DEBUG: openFiles after: " + openFiles);
-                Protocol.log("DEBUG: openFiles.contains(cleanFileId): " + openFiles.contains(cleanFileId));
-                Protocol.log("DEBUG: openFiles size: " + openFiles.size());
-                Protocol.log("======================");
-
-                // Dosya içeriğini gönder
                 List<String> currentUsers = server.getDocumentManager().getFileUsers(cleanFileId);
                 String usersData = String.join(",", currentUsers);
 
                 String docContent = doc.getContent();
                 Protocol.log("DEBUG: Sending FILE_CONTENT - length: " + docContent.length() +
                         ", has newlines: " + docContent.contains("\n"));
-                if (docContent.contains("\n")) {
-                    Protocol.log("DEBUG: Content preview: '" + docContent.replace("\n", "\\n") + "'");
-                }
 
                 Message response = Message.createFileContent(userId, cleanFileId, doc.getContent())
                         .addData("users", usersData)
@@ -503,6 +419,10 @@ public class ClientHandler implements Runnable {
             sendError("Dosya açma hatası: " + e.getMessage());
         }
     }
+
+    /**
+     * FILE_DELETE mesajını işle - AYNEN KOPYALA
+     */
     private void handleFileDelete(Message message) {
         if (!checkAuthenticated()) return;
 
@@ -516,7 +436,6 @@ public class ClientHandler implements Runnable {
         }
 
         try {
-            // FileId'yi temizle (client hatalarına karşı)
             String cleanFileId = fileId.trim();
             if (cleanFileId.contains(":")) {
                 String[] parts = cleanFileId.split(":");
@@ -528,7 +447,6 @@ public class ClientHandler implements Runnable {
 
             Protocol.log("DEBUG: İşlenecek silme fileId: '" + cleanFileId + "'");
 
-            // Dosyanın silinebilir olup olmadığını kontrol et
             boolean canDelete = server.getDocumentManager().canDeleteDocument(cleanFileId, userId);
             if (!canDelete) {
                 Protocol.log("WARNING: Dosya şu anda silinemiyor (muhtemelen çoklu kullanıcı var)");
@@ -539,26 +457,21 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            // Eğer dosya açıksa önce kapat
             if (openFiles.contains(cleanFileId)) {
                 server.getDocumentManager().closeDocument(cleanFileId, userId);
                 openFiles.remove(cleanFileId);
                 Protocol.log("DEBUG: Açık dosya kapatıldı: " + cleanFileId);
             }
 
-            // Dosyayı sil
             boolean deleted = server.getDocumentManager().deleteDocument(cleanFileId, userId);
 
             if (deleted) {
-                // Başarılı silme response'u
                 Message response = Message.createFileDeleteAck(userId, cleanFileId, true,
                         "Dosya başarıyla silindi");
                 sendMessage(response);
 
                 Protocol.log("SUCCESS: Dosya silindi: " + cleanFileId + " by " + getUserId());
 
-                // Diğer kullanıcılara dosya listesi güncellemesi broadcast et (opsiyonel)
-                // Böylece diğer kullanıcıların dosya listesi otomatik güncellenir
                 broadcastFileListUpdate();
 
             } else {
@@ -579,26 +492,8 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     *  NEW: Diğer kullanıcılara dosya listesi güncellemesi gönder
+     * TEXT_INSERT mesajını işle - AYNEN KOPYALA
      */
-    private void broadcastFileListUpdate() {
-        try {
-            // Tüm bağlı kullanıcılara FILE_LIST_UPDATE mesajı gönder
-            Message updateMsg = new Message(Message.MessageType.FILE_LIST_RESP, null, null)
-                    .addData("update", "refresh");
-
-            server.broadcastToAll(updateMsg, userId);
-
-            Protocol.log("DEBUG: File list update broadcast gönderildi");
-
-        } catch (Exception e) {
-            Protocol.log("DEBUG: File list update broadcast hatası: " + e.getMessage());
-        }
-    }
-
-        /**
-         * TEXT_INSERT mesajını işle - SPACE CHARACTER FIX
-         */
     private void handleTextInsert(Message message) {
         if (!checkAuthenticated()) return;
 
@@ -618,7 +513,6 @@ public class ClientHandler implements Runnable {
             Integer position = message.getDataAsInt("position");
             String textValue = message.getData("text");
 
-            //  SPECIAL CHARACTERS MARKER DECODING
             String text;
             if ("__SPACE__".equals(textValue)) {
                 text = " ";
@@ -638,9 +532,7 @@ public class ClientHandler implements Runnable {
 
             System.out.println("DEBUG: Final decoded text: '" + text + "' (length: " +
                     (text != null ? text.length() : "null") + ")");
-            System.out.println("DEBUG: Original position from client: " + position);
 
-            // Validation
             if (position == null || text == null) {
                 System.out.println("ERROR: Invalid data - position: " + position + ", text: " +
                         (text != null ? "'" + text + "'" : "null"));
@@ -648,12 +540,10 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            //  USE NEW insertTextWithResult METHOD
             DocumentManager.InsertResult result = server.getDocumentManager()
                     .insertTextWithResult(fileId, position, text, userId);
 
             if (result.success) {
-                //  BROADCAST WITH ACTUAL APPLIED POSITION (NOT ORIGINAL)
                 String broadcastText;
                 if (text.equals(" ")) {
                     broadcastText = "__SPACE__";
@@ -668,23 +558,14 @@ public class ClientHandler implements Runnable {
                     broadcastText = text;
                 }
 
-                // ✅ USE RESULT.APPLIEDPOSITION INSTEAD OF ORIGINAL POSITION
                 Message updateMsg = Message.createTextUpdate(userId, fileId, "insert",
                         result.appliedPosition, broadcastText);
                 server.broadcastToFile(fileId, updateMsg, userId);
 
-                // Success log with both positions
                 if (text.equals("\n")) {
                     System.out.println("🎉 SERVER SUCCESS: NEWLINE CHARACTER INSERTED! 🎉");
-                    System.out.println("Text insert: " + fileId + " CLIENT pos:" + position +
-                            " → SERVER pos:" + result.appliedPosition + " NEWLINE by " + getUserId());
                 } else if (text.equals(" ")) {
                     System.out.println("🎉 SERVER SUCCESS: SPACE CHARACTER INSERTED! 🎉");
-                    System.out.println("Text insert: " + fileId + " CLIENT pos:" + position +
-                            " → SERVER pos:" + result.appliedPosition + " SPACE by " + getUserId());
-                } else {
-                    System.out.println("Text insert: " + fileId + " CLIENT pos:" + position +
-                            " → SERVER pos:" + result.appliedPosition + " text:'" + text + "' by " + getUserId());
                 }
 
             } else {
@@ -698,8 +579,9 @@ public class ClientHandler implements Runnable {
             sendError("Metin ekleme hatası");
         }
     }
+
     /**
-     * TEXT_DELETE mesajını işle
+     * TEXT_DELETE mesajını işle - AYNEN KOPYALA
      */
     private void handleTextDelete(Message message) {
         if (!checkAuthenticated()) return;
@@ -719,12 +601,10 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            // DocumentManager'da Robust OT ile delete
             boolean success = server.getDocumentManager()
                     .deleteText(fileId, position, length, userId);
 
             if (success) {
-                // Diğer kullanıcılara broadcast
                 Message updateMsg = Message.createTextUpdate(userId, fileId, "delete", position, "")
                         .addData("length", length);
                 server.broadcastToFile(fileId, updateMsg, userId);
@@ -742,7 +622,7 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     * SAVE mesajını işle
+     * SAVE mesajını işle - AYNEN KOPYALA
      */
     private void handleSave(Message message) {
         if (!checkAuthenticated()) return;
@@ -770,54 +650,92 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    // === UTILITY METHODS ===
+    // === WEBSOCKET SPECIFIC METHODS ===
 
     /**
-     * İstemciye mesaj gönder - newline-safe version
-     */
-    /**
-     * İstemciye mesaj gönder - debug enhanced version
+     * İstemciye mesaj gönder - WebSocket version
      */
     public void sendMessage(Message message) {
-        if (!isConnected.get() || clientSocket.isClosed()) {
+        if (!isConnected.get() || !webSocket.isOpen()) {
             return;
         }
 
         try {
             String serialized = message.serialize();
 
-            //  FILE_CONTENT mesajları için özel debug
             if (message.getType() == Message.MessageType.FILE_CONTENT) {
                 String content = message.getData("content");
                 if (content != null && (content.contains("\n") || content.contains("\r"))) {
-                    Protocol.log("DEBUG: FILE_CONTENT has newlines - length: " + content.length());
-                    Protocol.log("DEBUG: Content preview: '" + content.replace("\n", "\\n").replace("\r", "\\r") + "'");
-                    Protocol.log("DEBUG: Full serialized message length: " + serialized.length());
+                    Protocol.log("DEBUG: WebSocket FILE_CONTENT has newlines - length: " + content.length());
                 }
             }
 
-            writeToSocket(clientSocket, serialized);
+            webSocket.send(serialized);
             messagesSent++;
 
-            Protocol.log("DEBUG: Message sent successfully: " + message.getType() + " to " + getUserId());
+            Protocol.log("DEBUG: WebSocket message sent: " + message.getType() + " to " + getUserId());
 
-        } catch (IOException e) {
-            Protocol.logError("Mesaj gönderme hatası: " + getUserId(), e);
+        } catch (Exception e) {
+            Protocol.logError("WebSocket mesaj gönderme hatası: " + getUserId(), e);
             disconnect();
         }
     }
 
     /**
-     * Hata mesajı gönder
+     * WebSocket bağlantı hatası
      */
+    public void onError(Exception ex) {
+        Protocol.logError("WebSocket hatası: " + getUserId(), ex);
+        disconnect();
+    }
+
+    /**
+     * WebSocket bağlantı kapandı
+     */
+    public void onClose(int code, String reason, boolean remote) {
+        Protocol.log("WebSocket kapandı: " + getUserId() + " - Code: " + code + ", Reason: " + reason);
+        disconnect();
+    }
+
+    /**
+     * Bağlantıyı kapat - WebSocket version
+     */
+    public void disconnect() {
+        if (!isConnected.compareAndSet(true, false)) {
+            return;
+        }
+
+        Protocol.log("WebSocket bağlantısı kapatılıyor: " + getUserId());
+
+        try {
+            synchronized (openFiles) {
+                for (String fileId : openFiles) {
+                    server.getDocumentManager().closeDocument(fileId, userId);
+                }
+                openFiles.clear();
+            }
+
+            if (userId != null) {
+                server.getUserManager().logoutUser(userId);
+                server.unregisterClient(userId);
+            }
+
+            if (webSocket.isOpen()) {
+                webSocket.close(1000, "Normal closure");
+            }
+
+        } catch (Exception e) {
+            Protocol.logError("WebSocket disconnect hatası: " + getUserId(), e);
+        }
+    }
+
+    // === UTILITY METHODS - AYNEN KOPYALA ===
+
     private void sendError(String errorMessage) {
         Message errorMsg = Message.createError(userId, errorMessage);
         sendMessage(errorMsg);
     }
 
-    /**
-     * Authentication kontrolü
-     */
     private boolean checkAuthenticated() {
         if (!isAuthenticated.get()) {
             sendError("Önce giriş yapmalısınız");
@@ -826,132 +744,71 @@ public class ClientHandler implements Runnable {
         return true;
     }
 
-    /**
-     * Dosyanın açık olup olmadığını kontrol et
-     */
     private boolean isFileOpen(String fileId) {
         return fileId != null && openFiles.contains(fileId);
     }
 
-    /**
-     * Temp client ID döndür (debug için)
-     */
     private String getTempClientId() {
         return tempClientId;
     }
 
-    /**
-     * Bağlantıyı kapat
-     */
-    public void disconnect() {
-        if (!isConnected.compareAndSet(true, false)) {
-            return; // Zaten kapatılmış
-        }
-
-        Protocol.log("İstemci bağlantısı kapatılıyor: " + getUserId());
-
+    private void broadcastFileListUpdate() {
         try {
-            // Açık dosyalardan çık
-            synchronized (openFiles) {
-                for (String fileId : openFiles) {
-                    server.getDocumentManager().closeDocument(fileId, userId);
-                }
-                openFiles.clear();
-            }
+            Message updateMsg = new Message(Message.MessageType.FILE_LIST_RESP, null, null)
+                    .addData("update", "refresh");
 
-            // UserManager'dan logout
-            if (userId != null) {
-                server.getUserManager().logoutUser(userId);
-            }
+            server.broadcastToAll(updateMsg, userId);
 
-            // Server'dan kayıt sil
-            if (userId != null) {
-                server.unregisterClient(userId);
-            }
-
-            // Socket'i kapat
-            if (clientSocket != null && !clientSocket.isClosed()) {
-                clientSocket.close();
-            }
+            Protocol.log("DEBUG: File list update broadcast gönderildi");
 
         } catch (Exception e) {
-            Protocol.logError("Disconnect hatası: " + getUserId(), e);
+            Protocol.log("DEBUG: File list update broadcast hatası: " + e.getMessage());
         }
     }
 
     // === GETTER METHODS ===
 
-    /**
-     * User ID döndür (authenticated ise gerçek ID, değilse temp ID)
-     */
     public String getUserId() {
         return userId != null ? userId : tempClientId;
     }
 
-    /**
-     * Username döndür
-     */
     public String getUsername() {
         return username;
     }
 
-    /**
-     * Authentication durumu
-     */
     public boolean isAuthenticated() {
         return isAuthenticated.get();
     }
 
-    /**
-     * Bağlantı durumu
-     */
     public boolean isConnected() {
         return isConnected.get();
     }
 
-    /**
-     * Gönderilen mesaj sayısı
-     */
     public int getMessagesSent() {
         return messagesSent;
     }
 
-    /**
-     * Alınan mesaj sayısı
-     */
     public int getMessagesReceived() {
         return messagesReceived;
     }
 
-    /**
-     * Bağlantı zamanı
-     */
     public long getConnectionTime() {
         return connectionTime;
     }
 
-    /**
-     * Açık dosya listesi
-     */
     public Set<String> getOpenFiles() {
         synchronized (openFiles) {
             return new HashSet<>(openFiles);
         }
     }
 
-    /**
-     * Bağlantı süresi (milisaniye)
-     */
     public long getConnectionDuration() {
         return System.currentTimeMillis() - connectionTime;
     }
 
-    /**
-     * İstemci bilgileri (debug için)
-     */
     @Override
     public String toString() {
-        return String.format("ClientHandler{userId='%s', username='%s', tempId='%s', connected=%s, authenticated=%s, openFiles=%d}",
+        return String.format("WebSocketClientHandler{userId='%s', username='%s', tempId='%s', connected=%s, authenticated=%s, openFiles=%d}",
                 getUserId(), username, tempClientId, isConnected.get(), isAuthenticated.get(), openFiles.size());
     }
 }

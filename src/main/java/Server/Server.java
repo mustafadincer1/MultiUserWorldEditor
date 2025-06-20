@@ -1,29 +1,30 @@
+// Server.java - TAMAMEN YENİDEN YAZ (WebSocket Only)
 package Server;
 
 import Common.*;
-import java.io.*;
-import java.net.*;
+import org.java_websocket.WebSocket;
+import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.WebSocketServer;
+import java.net.InetSocketAddress;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * MTP (Multi-user Text Protocol) Ana Sunucu
+ * MTP (Multi-user Text Protocol) WebSocket Server
  * Robust OT entegreli DocumentManager ve UserManager ile çalışır
  */
 public class Server {
 
     // Server konfigürasyonu
     private final int port;
-    private ServerSocket serverSocket;
+    private WebSocketServer wsServer;
     private boolean isRunning = false;
-
-    // Thread yönetimi
-    private ExecutorService clientThreadPool;
     private final Object serverLock = new Object();
 
     // İstemci yönetimi
     private final Map<String, ClientHandler> connectedClients = new ConcurrentHashMap<>();
+    private final Map<WebSocket, ClientHandler> webSocketHandlers = new ConcurrentHashMap<>();
     private final AtomicInteger clientCounter = new AtomicInteger(0);
 
     // Manager'lar
@@ -37,7 +38,7 @@ public class Server {
      * Constructor - varsayılan port
      */
     public Server() {
-        this(Protocol.DEFAULT_PORT);
+        this(Protocol.DEFAULT_PORT); // Protocol.java'dan DEFAULT_PORT kullan (8080)
     }
 
     /**
@@ -54,95 +55,126 @@ public class Server {
         // Manager'ları başlat
         this.userManager = new UserManager();
         this.documentManager = new DocumentManager();
-        this.clientThreadPool = Executors.newFixedThreadPool(Protocol.MAX_CONNECTIONS);
 
-        Protocol.log("Server oluşturuldu. Port: " + port);
+        Protocol.log("WebSocket Server oluşturuldu. Port: " + port);
     }
 
     /**
-     * Sunucuyu başlat
+     * WebSocket sunucusunu başlat
      */
-    public void start() throws IOException {
+    public void start() throws Exception {
         synchronized (serverLock) {
             if (isRunning) {
-                Protocol.log("Server zaten çalışıyor!");
+                Protocol.log("WebSocket Server zaten çalışıyor!");
                 return;
             }
 
             try {
-                // Server socket oluştur
-                serverSocket = new ServerSocket(port);
-                serverSocket.setReuseAddress(true);
+                wsServer = new WebSocketServer(new InetSocketAddress(port)) {
 
+                    @Override
+                    public void onOpen(WebSocket conn, ClientHandshake handshake) {
+                        String clientInfo = conn.getRemoteSocketAddress().toString();
+                        Protocol.log("Yeni WebSocket bağlantısı: " + clientInfo);
+
+                        // Maksimum bağlantı kontrolü
+                        if (webSocketHandlers.size() >= Protocol.MAX_CONNECTIONS) {
+                            Protocol.log("Maksimum bağlantı sayısına ulaşıldı. Reddedilen: " + clientInfo);
+
+                            try {
+                                Message errorMsg = Message.createError(null, Protocol.ERROR_MAX_CONNECTIONS);
+                                conn.send(errorMsg.serialize());
+                                conn.close(1008, "Server full");
+                            } catch (Exception e) {
+                                Protocol.logError("Hata mesajı gönderilemedi", e);
+                            }
+                            return;
+                        }
+
+                        // ClientHandler oluştur
+                        String tempClientId = "ws_temp_" + clientCounter.incrementAndGet();
+                        ClientHandler handler = new ClientHandler(Server.this, conn, tempClientId);
+
+                        // Mapping'leri sakla
+                        webSocketHandlers.put(conn, handler);
+                        conn.setAttachment(handler);
+
+                        Protocol.log("WebSocket ClientHandler oluşturuldu: " + tempClientId);
+                    }
+
+                    @Override
+                    public void onMessage(WebSocket conn, String message) {
+                        try {
+                            ClientHandler handler = webSocketHandlers.get(conn);
+                            if (handler != null) {
+                                handler.onMessage(message);
+                            } else {
+                                Protocol.log("WARNING: Handler bulunamadı WebSocket için: " + conn.getRemoteSocketAddress());
+                            }
+                        } catch (Exception e) {
+                            Protocol.logError("WebSocket mesaj işleme hatası", e);
+
+                            try {
+                                Message errorMsg = Message.createError(null, "Mesaj işleme hatası");
+                                conn.send(errorMsg.serialize());
+                            } catch (Exception ex) {
+                                Protocol.logError("Hata mesajı gönderilemedi", ex);
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onClose(WebSocket conn, int code, String reason, boolean remote) {
+                        ClientHandler handler = webSocketHandlers.remove(conn);
+
+                        if (handler != null) {
+                            Protocol.log("WebSocket bağlantısı kapandı: " + handler.getUserId() +
+                                    " - Code: " + code + ", Reason: " + reason + ", Remote: " + remote);
+
+                            handler.onClose(code, reason, remote);
+
+                            // Eğer authenticated ise connectedClients'tan da kaldır
+                            if (handler.isAuthenticated()) {
+                                unregisterClient(handler.getUserId());
+                            }
+                        } else {
+                            Protocol.log("WebSocket kapandı (handler bulunamadı): " +
+                                    conn.getRemoteSocketAddress() + " - Code: " + code);
+                        }
+                    }
+
+                    @Override
+                    public void onError(WebSocket conn, Exception ex) {
+                        ClientHandler handler = webSocketHandlers.get(conn);
+
+                        if (handler != null) {
+                            Protocol.logError("WebSocket hatası: " + handler.getUserId(), ex);
+                            handler.onError(ex);
+                        } else {
+                            Protocol.logError("WebSocket hatası (handler yok): " +
+                                    (conn != null ? conn.getRemoteSocketAddress() : "null"), ex);
+                        }
+                    }
+
+                    @Override
+                    public void onStart() {
+                        Protocol.log("=== WEBSOCKET MTP SERVER BAŞLATILDI ===");
+                        Protocol.log("Port: " + port);
+                        Protocol.log("Maksimum bağlantı: " + Protocol.MAX_CONNECTIONS);
+                        Protocol.log("Documents klasörü: " + Protocol.DOCUMENTS_FOLDER);
+                        Protocol.log("Kayıtlı kullanıcı sayısı: " + userManager.getTotalUserCount());
+                        Protocol.log("WebSocket Server dinleme modunda...");
+                    }
+                };
+
+                // Server'ı başlat
+                wsServer.start();
                 isRunning = true;
-                Protocol.log("=== MTP SERVER BAŞLATILDI ===");
-                Protocol.log("Port: " + port);
-                Protocol.log("Maksimum bağlantı: " + Protocol.MAX_CONNECTIONS);
-                Protocol.log("Documents klasörü: " + Protocol.DOCUMENTS_FOLDER);
-                Protocol.log("Kayıtlı kullanıcı sayısı: " + userManager.getTotalUserCount());
 
-                // Ana server loop
-                acceptClients();
-
-            } catch (IOException e) {
-                Protocol.logError("Server başlatma hatası", e);
+            } catch (Exception e) {
+                Protocol.logError("WebSocket Server başlatma hatası", e);
                 throw e;
             }
-        }
-    }
-
-    /**
-     * İstemci bağlantılarını kabul eden ana loop
-     */
-    private void acceptClients() {
-        Protocol.log("İstemci bağlantıları dinleniyor...");
-
-        while (isRunning && !serverSocket.isClosed()) {
-            try {
-                // Yeni bağlantıyı kabul et
-                Socket clientSocket = serverSocket.accept();
-
-                // Maksimum bağlantı kontrolü
-                if (connectedClients.size() >= Protocol.MAX_CONNECTIONS) {
-                    Protocol.log("Maksimum bağlantı sayısına ulaşıldı. Reddedilen: " +
-                            clientSocket.getInetAddress());
-
-                    sendMaxConnectionError(clientSocket);
-                    clientSocket.close();
-                    continue;
-                }
-
-                // İstemci bilgileri
-                String clientInfo = clientSocket.getInetAddress().getHostAddress() + ":" +
-                        clientSocket.getPort();
-                Protocol.log("Yeni bağlantı: " + clientInfo);
-
-                // ClientHandler oluştur ve başlat
-                String tempClientId = "temp_" + clientCounter.incrementAndGet();
-                ClientHandler clientHandler = new ClientHandler(this, clientSocket, tempClientId);
-
-                clientThreadPool.submit(clientHandler);
-
-            } catch (SocketException e) {
-                // Server kapatılırken normal
-                if (isRunning) {
-                    Protocol.logError("Socket hatası", e);
-                }
-            } catch (IOException e) {
-                Protocol.logError("İstemci kabul etme hatası", e);
-            }
-        }
-    }
-
-    /**
-     * Maksimum bağlantı hatası gönder
-     */
-    private void sendMaxConnectionError(Socket clientSocket) {
-        try {
-            Message errorMsg = Message.createError(null, Protocol.ERROR_MAX_CONNECTIONS);
-            Utils.writeToSocket(clientSocket, errorMsg.serialize());
-        } catch (IOException e) {
-            Protocol.logError("Hata mesajı gönderilemedi", e);
         }
     }
 
@@ -156,20 +188,18 @@ public class Server {
             return false;
         }
 
-        // Kullanıcı zaten bağlı mı?
         if (connectedClients.containsKey(userId)) {
             Protocol.log("Kullanıcı zaten bağlı: " + userId);
             return false;
         }
 
-        // UserManager'da session var mı?
         if (!userManager.isValidSession(userId)) {
             Protocol.log("Geçersiz session: " + userId);
             return false;
         }
 
         connectedClients.put(userId, clientHandler);
-        Protocol.log("İstemci kaydedildi: " + userId + " (Toplam: " + connectedClients.size() + ")");
+        Protocol.log("WebSocket İstemci kaydedildi: " + userId + " (Toplam: " + connectedClients.size() + ")");
 
         // Welcome mesajı gönder
         sendWelcomeMessage(clientHandler);
@@ -182,7 +212,7 @@ public class Server {
      */
     public void unregisterClient(String userId) {
         if (userId != null && connectedClients.remove(userId) != null) {
-            Protocol.log("İstemci kaldırıldı: " + userId + " (Toplam: " + connectedClients.size() + ")");
+            Protocol.log("WebSocket İstemci kaldırıldı: " + userId + " (Toplam: " + connectedClients.size() + ")");
         }
     }
 
@@ -192,20 +222,19 @@ public class Server {
     private void sendWelcomeMessage(ClientHandler clientHandler) {
         try {
             String welcomeText = String.format(
-                    "Hos geldiniz! Server: %s v%s | Aktif kullanici: %d | Toplam dosya: %d",
+                    "WebSocket sunucusuna hos geldiniz! Server: %s v%s | Aktif kullanici: %d | Toplam dosya: %d",
                     Protocol.PROJECT_NAME,
                     Protocol.VERSION,
                     connectedClients.size(),
                     documentManager.getAllDocuments().size()
             );
 
-            // Sistem mesajı olarak gönder
             Message welcomeMsg = new Message(Message.MessageType.LOGIN, null, null)
                     .addData("message", welcomeText);
             clientHandler.sendMessage(welcomeMsg);
 
         } catch (Exception e) {
-            Protocol.logError("Welcome mesajı gönderilemedi", e);
+            Protocol.logError("WebSocket Welcome mesajı gönderilemedi", e);
         }
     }
 
@@ -224,7 +253,7 @@ public class Server {
 
         for (String userId : fileUsers) {
             if (userId.equals(excludeUserId)) {
-                continue; // Gönderen hariç
+                continue;
             }
 
             ClientHandler client = connectedClients.get(userId);
@@ -235,7 +264,7 @@ public class Server {
         }
 
         if (sentCount > 0) {
-            Protocol.log("Dosya broadcast: " + fileId + " -> " + sentCount + " kullanıcı");
+            Protocol.log("WebSocket Dosya broadcast: " + fileId + " -> " + sentCount + " kullanıcı");
         }
     }
 
@@ -254,7 +283,7 @@ public class Server {
             ClientHandler client = entry.getValue();
 
             if (userId.equals(excludeUserId)) {
-                continue; // Gönderen hariç
+                continue;
             }
 
             if (client.isConnected()) {
@@ -264,7 +293,7 @@ public class Server {
         }
 
         if (sentCount > 0) {
-            Protocol.log("Global broadcast -> " + sentCount + " kullanıcı");
+            Protocol.log("WebSocket Global broadcast -> " + sentCount + " kullanıcı");
         }
     }
 
@@ -301,9 +330,6 @@ public class Server {
 
     // === USER MANAGEMENT ===
 
-    /**
-     * Aktif kullanıcı listesi (username ile)
-     */
     public List<String> getActiveUsernames() {
         List<String> usernames = new ArrayList<>();
 
@@ -317,9 +343,6 @@ public class Server {
         return usernames;
     }
 
-    /**
-     * Kullanıcıyı zorla çıkar
-     */
     public boolean kickUser(String username, String reason) {
         String userId = userManager.getUserIdByUsername(username);
         if (userId == null) {
@@ -328,11 +351,9 @@ public class Server {
 
         ClientHandler client = connectedClients.get(userId);
         if (client != null) {
-            // Kick mesajı gönder
             Message kickMsg = Message.createError(userId, "Sunucudan çıkarıldınız: " + reason);
             client.sendMessage(kickMsg);
 
-            // Bağlantıyı kapat
             client.disconnect();
 
             Protocol.log("Kullanıcı çıkarıldı: " + username + " - " + reason);
@@ -344,64 +365,42 @@ public class Server {
 
     // === SERVER INFO ===
 
-    /**
-     * Bağlı kullanıcı sayısı
-     */
     public int getConnectedUserCount() {
         return connectedClients.size();
     }
 
-    /**
-     * Bağlı kullanıcı listesi
-     */
     public List<String> getConnectedUsers() {
         return new ArrayList<>(connectedClients.keySet());
     }
 
-    /**
-     * Kullanıcının bağlı olup olmadığını kontrol et
-     */
     public boolean isUserConnected(String userId) {
         return userId != null && connectedClients.containsKey(userId);
     }
 
-    /**
-     * DocumentManager'a erişim
-     */
     public DocumentManager getDocumentManager() {
         return documentManager;
     }
 
-    /**
-     * UserManager'a erişim
-     */
     public UserManager getUserManager() {
         return userManager;
     }
 
-    /**
-     * Sunucunun çalışıp çalışmadığını kontrol et
-     */
     public boolean isRunning() {
         return isRunning;
     }
 
-    /**
-     * Server istatistikleri
-     */
     public String getServerStats() {
         StringBuilder stats = new StringBuilder();
-        stats.append("=== MTP SERVER İSTATİSTİKLERİ ===\n");
+        stats.append("=== WEBSOCKET MTP SERVER İSTATİSTİKLERİ ===\n");
         stats.append("Proje: ").append(Protocol.PROJECT_NAME).append(" v").append(Protocol.VERSION).append("\n");
+        stats.append("Transport: WebSocket\n");
         stats.append("Port: ").append(port).append("\n");
         stats.append("Durum: ").append(isRunning ? "Çalışıyor" : "Durdurulmuş").append("\n");
         stats.append("Bağlı Kullanıcılar: ").append(connectedClients.size()).append("/").append(Protocol.MAX_CONNECTIONS).append("\n");
 
-        // User istatistikleri
         stats.append("Kayıtlı Kullanıcılar: ").append(userManager.getTotalUserCount()).append("\n");
         stats.append("Aktif Sessionlar: ").append(userManager.getActiveUserCount()).append("\n");
 
-        // Document istatistikleri
         List<DocumentManager.DocumentInfo> docs = documentManager.getAllDocuments();
         int openFiles = (int) docs.stream().filter(d -> d.getUserCount() > 0).count();
         stats.append("Toplam Dosyalar: ").append(docs.size()).append("\n");
@@ -409,7 +408,6 @@ public class Server {
 
         stats.append("Çalışma Süresi: ").append(getUptimeString()).append("\n");
 
-        // Aktif kullanıcı isimleri
         List<String> activeUsernames = getActiveUsernames();
         if (!activeUsernames.isEmpty()) {
             stats.append("Aktif Kullanıcılar: ").append(String.join(", ", activeUsernames)).append("\n");
@@ -420,9 +418,6 @@ public class Server {
         return stats.toString();
     }
 
-    /**
-     * Uptime hesapla
-     */
     private String getUptimeString() {
         long uptimeMs = System.currentTimeMillis() - startTime;
         long seconds = uptimeMs / 1000;
@@ -433,54 +428,34 @@ public class Server {
                 hours, minutes % 60, seconds % 60);
     }
 
-
-
-
     // === SHUTDOWN ===
 
-    /**
-     * Sunucuyu güvenli şekilde durdur
-     */
     public void stop() {
         synchronized (serverLock) {
             if (!isRunning) {
-                Protocol.log("Server zaten durdurulmuş!");
+                Protocol.log("WebSocket Server zaten durdurulmuş!");
                 return;
             }
 
-            Protocol.log("=== SERVER DURDURULUYOR ===");
+            Protocol.log("=== WEBSOCKET SERVER DURDURULUYOR ===");
             isRunning = false;
 
             try {
-                // Tüm istemcilere disconnect bildir
                 Message disconnectMsg = Message.createDisconnect(null);
                 broadcastToAll(disconnectMsg, null);
 
-                // Kısa bekle (mesajların iletilmesi için)
                 Thread.sleep(1000);
 
-                // Socket'i kapat
-                if (serverSocket != null && !serverSocket.isClosed()) {
-                    serverSocket.close();
+                for (ClientHandler handler : webSocketHandlers.values()) {
+                    handler.disconnect();
                 }
-
-                // Thread pool'u kapat
-                if (clientThreadPool != null) {
-                    clientThreadPool.shutdown();
-
-                    if (!clientThreadPool.awaitTermination(5, TimeUnit.SECONDS)) {
-                        Protocol.log("Thread pool zorla kapatılıyor...");
-                        clientThreadPool.shutdownNow();
-                    }
-                }
-
-                // Tüm client bağlantılarını kapat
-                for (ClientHandler client : connectedClients.values()) {
-                    client.disconnect();
-                }
+                webSocketHandlers.clear();
                 connectedClients.clear();
 
-                // Manager'ları kapat
+                if (wsServer != null) {
+                    wsServer.stop(5000);
+                }
+
                 if (userManager != null) {
                     userManager.clearAllSessions();
                 }
@@ -489,25 +464,21 @@ public class Server {
                     documentManager.shutdown();
                 }
 
-                Protocol.log("Server başarıyla durduruldu.");
+                Protocol.log("WebSocket Server başarıyla durduruldu.");
 
             } catch (Exception e) {
-                Protocol.logError("Server durdurma hatası", e);
+                Protocol.logError("WebSocket Server durdurma hatası", e);
             }
         }
     }
 
     // === MAIN METHOD ===
 
-    /**
-     * Ana method - sunucuyu başlat
-     */
     public static void main(String[] args) {
-        System.out.println("=== " + Protocol.PROJECT_NAME + " v" + Protocol.VERSION + " ===");
+        System.out.println("=== " + Protocol.PROJECT_NAME + " WebSocket Server v" + Protocol.VERSION + " ===");
 
-        int port = Protocol.DEFAULT_PORT;
+        int port = Protocol.DEFAULT_PORT; // Default 8080 kullan
 
-        // Komut satırından port al
         if (args.length > 0) {
             try {
                 port = Integer.parseInt(args[0]);
@@ -523,32 +494,50 @@ public class Server {
 
         Server server = new Server(port);
 
-        // Graceful shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             Protocol.log("Shutdown sinyali alındı (Ctrl+C)...");
             server.stop();
         }));
 
-        // Server istatistiklerini periyodik göster
         Timer statsTimer = new Timer(true);
         statsTimer.scheduleAtFixedRate(new TimerTask() {
             @Override
             public void run() {
                 if (server.isRunning() && server.getConnectedUserCount() > 0) {
-                    Protocol.log("Aktif kullanıcı: " + server.getConnectedUserCount() +
+                    Protocol.log("WebSocket Aktif kullanıcı: " + server.getConnectedUserCount() +
                             " | Kayıtlı kullanıcı: " + server.getUserManager().getTotalUserCount());
                 }
             }
-        }, 60000, 60000); // Her dakika
+        }, 60000, 60000);
 
-        // Console commands için basit scanner
         Scanner scanner = new Scanner(System.in);
         Thread consoleThread = new Thread(() -> {
-            System.out.println("Server komutları için 'help' yazın");
+            System.out.println("WebSocket Server komutları: 'status', 'stop', 'help'");
             while (server.isRunning()) {
                 try {
-                    System.out.print("server> ");
-                    String command = scanner.nextLine();
+                    System.out.print("websocket-server> ");
+                    String command = scanner.nextLine().trim().toLowerCase();
+
+                    switch (command) {
+                        case "status":
+                            System.out.println(server.getServerStats());
+                            break;
+                        case "stop":
+                        case "quit":
+                        case "exit":
+                            Protocol.log("Manuel stop komutu...");
+                            server.stop();
+                            System.exit(0);
+                            break;
+                        case "help":
+                            System.out.println("Komutlar: status, stop, help");
+                            break;
+                        default:
+                            if (!command.isEmpty()) {
+                                System.out.println("Bilinmeyen komut: " + command + " (help yazın)");
+                            }
+                            break;
+                    }
                 } catch (Exception e) {
                     // Console hatası - devam et
                 }
@@ -559,8 +548,13 @@ public class Server {
 
         try {
             server.start();
-        } catch (IOException e) {
-            Protocol.logError("Server başlatılamadı", e);
+
+            while (server.isRunning()) {
+                Thread.sleep(1000);
+            }
+
+        } catch (Exception e) {
+            Protocol.logError("WebSocket Server başlatılamadı", e);
             System.exit(1);
         }
     }

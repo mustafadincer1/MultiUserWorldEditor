@@ -4,9 +4,8 @@ import java.nio.file.Paths;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * MTP (Multi-user Text Protocol) Protokol Sabitleri - Sadeleştirilmiş Versiyon
- * Sadece gerekli sabitler ve temel utility metotları
- * UPDATED: Debug metodları eklendi
+ * MTP (Multi-user Text Protocol) Protokol Sabitleri - WebSocket Versiyonu
+ * WebSocket tabanlı çok kullanıcılı metin editörü için güncellenmiş sabitler
  */
 public final class Protocol {
 
@@ -16,7 +15,7 @@ public final class Protocol {
     }
 
     // === TEMEL NETWORK AYARLARI ===
-    public static final int DEFAULT_PORT = 8080;
+    public static final int DEFAULT_PORT = 8080;  // WebSocket için de 8080 kullanacağız
     public static final int MAX_CONNECTIONS = 50;
     public static final int BUFFER_SIZE = 4096;
     public static final int CONNECTION_TIMEOUT = 30000; // 30 saniye
@@ -63,6 +62,7 @@ public final class Protocol {
     public static String generateFileId() {
         return FILE_ID_PREFIX + System.currentTimeMillis() + "_" + idCounter.getAndIncrement();
     }
+
     public static boolean isValidFileIdForDeletion(String fileId) {
         if (isNullOrEmpty(fileId)) {
             return false;
@@ -75,7 +75,7 @@ public final class Protocol {
     }
 
     /**
-     * 🔧 NEW: Dosya silme operasyonunun güvenli olup olmadığını kontrol eder
+     * Dosya silme operasyonunun güvenli olup olmadığını kontrol eder
      */
     public static boolean isSafeDeleteOperation(String fileId, String userId, int activeUserCount) {
         // FileId validation
@@ -189,7 +189,7 @@ public final class Protocol {
         return str == null ? "" : str.trim();
     }
 
-    // === 🔧 NEW: DEBUG METODLARI ===
+    // === DEBUG METODLARI ===
 
     /**
      * Current working directory'yi logla
@@ -267,5 +267,5 @@ public final class Protocol {
 
     // === PROJE BİLGİLERİ ===
     public static final String PROJECT_NAME = "Multi-user Text Editor";
-    public static final String VERSION = "1.0";
+    public static final String VERSION = "2.0";
 }
